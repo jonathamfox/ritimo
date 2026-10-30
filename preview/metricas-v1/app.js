@@ -298,6 +298,7 @@ VIEWS.hoje = {
       if (b.dataset.water) {
         const d = state.date; db.water[d] = Math.max(0, (db.water[d] || 0) + Number(b.dataset.water)); save(); render();
       }
+      if (b.dataset.metricDel && confirm('Excluir esta atividade?')) { db.metrics = (db.metrics || []).filter(m => m.id !== b.dataset.metricDel); save(); render(); }
       if (b.dataset.start) startWorkout(b.dataset.start);
     });
   }
@@ -615,11 +616,19 @@ VIEWS.treino = {
       <div style="margin-top:10px">${w.exercises.slice(0, 6).map(e => `<div class="small muted" style="padding:2px 0">• ${esc(e.name)} — ${e.sets}×${esc(e.reps)}${e.load_kg ? ' · ' + num(e.load_kg, 1) + ' kg' : ''}</div>`).join('')}</div>
       <button class="btn primary block" style="margin-top:12px" data-start="${w.id}">Começar treino</button></div>`).join('')
       : '<div class="card empty">Nenhuma ficha ainda. Toque em “Nova ficha”.</div>'}
+    <div class="card"><h3>Métricas de treino</h3><p class="small muted">Registre corrida, caminhada, ciclismo, musculação ou outras atividades, com duração, frequência cardíaca, distância e calorias ativas.</p>
+      <button class="btn primary block" id="metricAdd">+ Registrar atividade</button>
+      <button class="btn block" id="healthImport" style="margin-top:8px">Importar exportação XML do Apple Saúde</button>
+      <p class="small muted">Importação manual, não sincronização automática. No iPhone: Saúde → perfil → Exportar Todos os Dados de Saúde. Se vier ZIP, extraia o arquivo export.xml no app Arquivos. Arquivos muito grandes podem não abrir no navegador.</p>
+      <div id="metricHistory">${(db.metrics || []).slice().sort((a,b)=>b.day.localeCompare(a.day)).slice(0,15).map(m=>`<div class="item"><div class="t"><b>${esc(m.type)}</b><span>${esc(m.day)} · ${num(m.minutes,0)} min${m.distance_km != null ? ' · '+num(m.distance_km,2)+' km':''}${m.hr_avg != null ? ' · '+num(m.hr_avg,0)+' bpm':''}${m.active_kcal != null ? ' · '+num(m.active_kcal,0)+' kcal ativas':''} · ${esc(m.source || 'manual')}</span></div><button class="x" data-metric-del="${esc(m.id)}" aria-label="Remover">×</button></div>`).join('') || '<div class="empty small">Nenhuma atividade registrada.</div>'}</div>
+    </div>
     <div class="section-title"><h3>Histórico</h3></div>
     <div class="card">${hist.length ? hist.map(h => `<div class="item"><div class="t"><b>${esc(h.name)}</b><span>${dayLabel(h.day)}</span></div><button class="x" data-undo="${h.id}" aria-label="Remover">×</button></div>`).join('') : '<div class="empty">Seus treinos concluídos aparecem aqui.</div>'}</div>`;
   },
   bind(view) {
     $('#newWk', view).addEventListener('click', () => openWorkoutEditor(null));
+    $('#metricAdd', view).addEventListener('click', openMetricForm);
+    $('#healthImport', view).addEventListener('click', importHealthWorkouts);
     view.addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.start) startWorkout(b.dataset.start);
@@ -628,6 +637,69 @@ VIEWS.treino = {
     });
   }
 };
+
+
+function openMetricForm() {
+  openSheet('Registrar métricas', `
+    <form id="metricForm">
+      <label class="f"><span>Modalidade</span><select name="type"><option>Musculação</option><option>Corrida</option><option>Caminhada</option><option>Ciclismo</option><option>CrossFit</option><option>Natação</option><option>Outro</option></select></label>
+      <label class="f"><span>Data</span><input name="day" type="date" required value="${today()}" max="${today()}"></label>
+      <div class="grid2">
+        <label class="f"><span>Duração (min)</span><input name="minutes" type="number" min="1" max="1440" step="1" required></label>
+        <label class="f"><span>Distância (km)</span><input name="distance_km" type="number" min="0" step="0.01" inputmode="decimal"></label>
+        <label class="f"><span>FC média (bpm)</span><input name="hr_avg" type="number" min="30" max="250"></label>
+        <label class="f"><span>FC máxima (bpm)</span><input name="hr_max" type="number" min="30" max="250"></label>
+        <label class="f"><span>Calorias ativas (kcal)</span><input name="active_kcal" type="number" min="0" max="10000"></label>
+        <label class="f"><span>Esforço percebido (1–10)</span><input name="effort" type="number" min="1" max="10"></label>
+      </div>
+      <label class="f"><span>Observações</span><input name="notes" maxlength="300"></label>
+      <button class="btn primary block" type="submit">Salvar atividade</button>
+    </form>`, b => $('#metricForm',b).addEventListener('submit',e=>{
+      e.preventDefault(); const f=new FormData(e.target);
+      const opt=k=>f.get(k)===''?null:Number(f.get(k));
+      const m={id:uid(),type:f.get('type'),day:f.get('day'),minutes:Number(f.get('minutes')),distance_km:opt('distance_km'),hr_avg:opt('hr_avg'),hr_max:opt('hr_max'),active_kcal:opt('active_kcal'),effort:opt('effort'),notes:String(f.get('notes')||''),source:'manual'};
+      if(!m.day || m.minutes<1 || m.minutes>1440 || [m.distance_km,m.hr_avg,m.hr_max,m.active_kcal,m.effort].some(v=>v!==null && !Number.isFinite(v)))return toast('Confira os valores');
+      (db.metrics=db.metrics||[]).push(m);save();closeSheet();render();toast('Atividade salva ✓');
+    }));
+}
+function importHealthWorkouts() {
+  const input=document.createElement('input');input.type='file';input.accept='.xml,text/xml,application/xml';
+  input.onchange=async()=>{
+    const file=input.files[0];if(!file)return;
+    if(file.size>30*1024*1024)return alert('Arquivo acima de 30 MB. O export.xml completo pode ser muito grande para este importador inicial. Não foi importado.');
+    toast('Lendo arquivo XML…');
+    try {
+      const doc=new DOMParser().parseFromString(await file.text(),'application/xml');
+      if(doc.querySelector('parsererror'))throw Error('XML inválido');
+      const nodes=[...doc.getElementsByTagName('Workout')];if(!nodes.length)return alert('Nenhum treino Workout encontrado neste XML.');
+      const existing=new Set((db.metrics||[]).filter(x=>x.import_key).map(x=>x.import_key));
+      const additions=[];
+      for(const w of nodes){
+        const start=w.getAttribute('startDate')||'',end=w.getAttribute('endDate')||'';
+        const day=start.slice(0,10);if(!/^\d{4}-\d\d-\d\d$/.test(day))continue;
+        const key=[start,end,w.getAttribute('workoutActivityType')||'',w.getAttribute('sourceName')||''].join('|');
+        if(existing.has(key))continue;
+        const duration=Number(w.getAttribute('duration')||0);
+        const unit=w.getAttribute('durationUnit')||'min';
+        const minutes=unit==='sec'?duration/60:unit==='hr'?duration*60:duration;
+        if(!Number.isFinite(minutes)||minutes<=0)continue;
+        const typeRaw=(w.getAttribute('workoutActivityType')||'Atividade').replace(/^HKWorkoutActivityType/,'');
+        const names={Running:'Corrida',Walking:'Caminhada',Cycling:'Ciclismo',TraditionalStrengthTraining:'Musculação',FunctionalStrengthTraining:'Treino funcional',Swimming:'Natação',HighIntensityIntervalTraining:'HIIT',CrossTraining:'CrossFit'};
+        const stats=[...w.getElementsByTagName('WorkoutStatistics')];
+        const getStat=(suffix)=>stats.find(x=>(x.getAttribute('type')||'').endsWith(suffix));
+        const energy=getStat('ActiveEnergyBurned'),distance=getStat('DistanceWalkingRunning')||getStat('DistanceCycling')||getStat('DistanceSwimming');
+        const value=(n,attrs)=>{if(!n)return null;for(const a of attrs){const v=Number(n.getAttribute(a));if(n.hasAttribute(a)&&Number.isFinite(v))return v;}return null;};
+        let kcal=value(energy,['sum','value']);if(kcal!==null && (energy.getAttribute('unit')||'').toLowerCase()==='kj')kcal/=4.184;
+        let km=value(distance,['sum','value']);if(km!==null){const u=distance.getAttribute('unit')||'km';if(u==='m')km/=1000;if(u==='mi')km*=1.609344;}
+        additions.push({id:uid(),type:names[typeRaw]||typeRaw,day,minutes:Math.round(minutes*10)/10,distance_km:km,active_kcal:kcal,hr_avg:null,hr_max:null,source:'Apple Saúde',import_key:key});
+        existing.add(key);
+      }
+      if(!additions.length)return alert('Nenhum treino novo encontrado. Os treinos podem já ter sido importados.');
+      if(!confirm('Importar '+additions.length+' treino(s) do Apple Saúde?'))return;
+      (db.metrics=db.metrics||[]).push(...additions);save();render();toast(additions.length+' treinos importados ✓');
+    }catch(e){alert('Não foi possível importar o XML: '+e.message);}
+  };input.click();
+}
 
 let restT = null;
 function stopRest() { clearInterval(restT); restT = null; $('#restTimer')?.remove(); }
