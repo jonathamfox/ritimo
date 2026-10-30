@@ -662,43 +662,128 @@ function openMetricForm() {
       (db.metrics=db.metrics||[]).push(m);save();closeSheet();render();toast('Atividade salva ✓');
     }));
 }
+
 function importHealthWorkouts() {
-  const input=document.createElement('input');input.type='file';input.accept='.xml,text/xml,application/xml';
-  input.onchange=async()=>{
-    const file=input.files[0];if(!file)return;
-    if(file.size>30*1024*1024)return alert('Arquivo acima de 30 MB. O export.xml completo pode ser muito grande para este importador inicial. Não foi importado.');
-    toast('Lendo arquivo XML…');
-    try {
-      const doc=new DOMParser().parseFromString(await file.text(),'application/xml');
-      if(doc.querySelector('parsererror'))throw Error('XML inválido');
-      const nodes=[...doc.getElementsByTagName('Workout')];if(!nodes.length)return alert('Nenhum treino Workout encontrado neste XML.');
+  if (!window.fflate?.Unzip) return alert('Biblioteca de ZIP não carregada. Verifique sua conexão e tente novamente.');
+  openSheet('Importar Apple Saúde', \`
+    <p class="small muted">Selecione o ZIP original exportado pelo aplicativo Saúde. O Ritmo lê os treinos aos poucos, sem carregar o XML completo na memória e sem enviar o arquivo a servidores.</p>
+    <label class="f"><span>Período a importar</span><select id="healthPeriod">
+      <option value="7">Últimos 7 dias</option><option value="15">Últimos 15 dias</option>
+      <option value="30" selected>Últimos 30 dias</option><option value="90">Últimos 90 dias</option>
+      <option value="365">Último ano</option><option value="all">Todo o histórico</option>
+    </select></label>
+    <label class="f"><span>Arquivo ZIP ou XML</span><input type="file" id="healthFile" accept=".zip,.xml,application/zip,application/xml,text/xml"></label>
+    <button class="btn primary block" id="healthStart">Analisar arquivo</button>
+    <p class="small muted" id="healthStatus" aria-live="polite"></p>
+    <div id="healthResults"></div>\`, b => {
+    let running=false;
+    $('#healthStart',b).addEventListener('click',async()=>{
+      if(running)return;
+      const file=$('#healthFile',b).files[0];if(!file)return toast('Selecione o arquivo');
+      const period=$('#healthPeriod',b).value;
+      const cutoff=period==='all'?'0000-00-00':addDays(today(),-Number(period));
+      const status=$('#healthStatus',b),results=$('#healthResults',b),button=$('#healthStart',b);
+      running=true;button.disabled=true;results.innerHTML='';
+      let scanned=0,skipped=0;
       const existing=new Set((db.metrics||[]).filter(x=>x.import_key).map(x=>x.import_key));
-      const additions=[];
-      for(const w of nodes){
-        const start=w.getAttribute('startDate')||'',end=w.getAttribute('endDate')||'';
-        const day=start.slice(0,10);if(!/^\d{4}-\d\d-\d\d$/.test(day))continue;
-        const key=[start,end,w.getAttribute('workoutActivityType')||'',w.getAttribute('sourceName')||''].join('|');
-        if(existing.has(key))continue;
-        const duration=Number(w.getAttribute('duration')||0);
-        const unit=w.getAttribute('durationUnit')||'min';
+      const pending=[];
+      const decodeAttrs=(el)=>el.getAttribute.bind(el);
+      function parseWorkout(xml){
+        const doc=new DOMParser().parseFromString('<root>'+xml+'</root>','application/xml');
+        if(doc.querySelector('parsererror'))return;
+        const w=doc.querySelector('Workout');if(!w)return;
+        scanned++;
+        const get=decodeAttrs(w),start=get('startDate')||'',end=get('endDate')||'',day=start.slice(0,10);
+        if(day<cutoff||day>today()||!/^\\d{4}-\\d\\d-\\d\\d$/.test(day)){skipped++;return;}
+        const raw=get('workoutActivityType')||'Atividade',source=get('sourceName')||'';
+        const key=[start,end,raw,source].join('|');
+        if(existing.has(key)){skipped++;return;}
+        const duration=Number(get('duration')||0),unit=get('durationUnit')||'min';
         const minutes=unit==='sec'?duration/60:unit==='hr'?duration*60:duration;
-        if(!Number.isFinite(minutes)||minutes<=0)continue;
-        const typeRaw=(w.getAttribute('workoutActivityType')||'Atividade').replace(/^HKWorkoutActivityType/,'');
-        const names={Running:'Corrida',Walking:'Caminhada',Cycling:'Ciclismo',TraditionalStrengthTraining:'Musculação',FunctionalStrengthTraining:'Treino funcional',Swimming:'Natação',HighIntensityIntervalTraining:'HIIT',CrossTraining:'CrossFit'};
+        if(!Number.isFinite(minutes)||minutes<=0){skipped++;return;}
+        const name=raw.replace(/^HKWorkoutActivityType/,'');
+        const names={Running:'Corrida',Walking:'Caminhada',Cycling:'Ciclismo',TraditionalStrengthTraining:'Musculação',FunctionalStrengthTraining:'Treino funcional',Swimming:'Natação',HighIntensityIntervalTraining:'HIIT',CrossTraining:'CrossFit',Elliptical:'Elíptico',Rowing:'Remo',Yoga:'Yoga',Other:'Outro'};
         const stats=[...w.getElementsByTagName('WorkoutStatistics')];
-        const getStat=(suffix)=>stats.find(x=>(x.getAttribute('type')||'').endsWith(suffix));
-        const energy=getStat('ActiveEnergyBurned'),distance=getStat('DistanceWalkingRunning')||getStat('DistanceCycling')||getStat('DistanceSwimming');
-        const value=(n,attrs)=>{if(!n)return null;for(const a of attrs){const v=Number(n.getAttribute(a));if(n.hasAttribute(a)&&Number.isFinite(v))return v;}return null;};
-        let kcal=value(energy,['sum','value']);if(kcal!==null && (energy.getAttribute('unit')||'').toLowerCase()==='kj')kcal/=4.184;
-        let km=value(distance,['sum','value']);if(km!==null){const u=distance.getAttribute('unit')||'km';if(u==='m')km/=1000;if(u==='mi')km*=1.609344;}
-        additions.push({id:uid(),type:names[typeRaw]||typeRaw,day,minutes:Math.round(minutes*10)/10,distance_km:km,active_kcal:kcal,hr_avg:null,hr_max:null,source:'Apple Saúde',import_key:key});
+        const stat=suffix=>stats.find(x=>(x.getAttribute('type')||'').endsWith(suffix));
+        const value=(node,keys)=>{if(!node)return null;for(const k of keys){const v=node.getAttribute(k);if(v!==null&&v!==''&&Number.isFinite(Number(v)))return Number(v);}return null;};
+        const energy=stat('ActiveEnergyBurned'),distance=stat('DistanceWalkingRunning')||stat('DistanceCycling')||stat('DistanceSwimming')||stat('Distance');
+        let kcal=value(energy,['sum','value']);
+        if(kcal!==null&&(energy.getAttribute('unit')||'').toLowerCase()==='kj')kcal/=4.184;
+        let km=value(distance,['sum','value']);
+        if(km!==null){const u=distance.getAttribute('unit')||'km';if(u==='m')km/=1000;else if(u==='mi')km*=1.609344;}
+        pending.push({id:uid(),type:names[name]||name,day,minutes:Math.round(minutes*10)/10,distance_km:km===null?null:Math.round(km*100)/100,active_kcal:kcal===null?null:Math.round(kcal),hr_avg:null,hr_max:null,source:'Apple Saúde',import_key:key});
         existing.add(key);
       }
-      if(!additions.length)return alert('Nenhum treino novo encontrado. Os treinos podem já ter sido importados.');
-      if(!confirm('Importar '+additions.length+' treino(s) do Apple Saúde?'))return;
-      (db.metrics=db.metrics||[]).push(...additions);save();render();toast(additions.length+' treinos importados ✓');
-    }catch(e){alert('Não foi possível importar o XML: '+e.message);}
-  };input.click();
+      let buffer='',seenXml=false;
+      const decoder=new TextDecoder('utf-8');
+      function parseChunk(bytes,final=false){
+        buffer+=decoder.decode(bytes,{stream:!final});
+        // Keep only a short tail while passing over non-workout records.
+        while(true){
+          const start=buffer.indexOf('<Workout ');
+          if(start<0){buffer=buffer.slice(-32);break;}
+          if(start>0)buffer=buffer.slice(start);
+          const end=buffer.indexOf('</Workout>');
+          if(end<0){
+            // A single malformed or unusually huge workout cannot consume unlimited memory.
+            if(buffer.length>4*1024*1024)throw Error('Registro de treino muito grande');
+            break;
+          }
+          parseWorkout(buffer.slice(0,end+10));
+          buffer=buffer.slice(end+10);
+        }
+      }
+      async function parseXmlStream(stream){
+        const reader=stream.getReader();try{while(true){const {done,value}=await reader.read();if(done)break;parseChunk(value);}}finally{reader.releaseLock();}
+        parseChunk(new Uint8Array(0),true);
+      }
+      async function parseZip(){
+        return new Promise(async(resolve,reject)=>{
+          let finished=false,xmlDone=false,reader;
+          const fail=e=>{if(!finished){finished=true;reject(e instanceof Error?e:new Error(String(e)));}};
+          const unzip=new fflate.Unzip(entry=>{
+            if(!/(^|\\/)export(ar)?\\.xml$/i.test(entry.name) && !/(^|\\/)export\\.xml$/i.test(entry.name)){entry.ondata=()=>{};return;}
+            if(seenXml){entry.ondata=()=>{};return;}
+            seenXml=true;
+            entry.ondata=(err,bytes,final)=>{
+              if(err)return fail(err);
+              try{parseChunk(bytes,final);if(final)xmlDone=true;}catch(e){fail(e);}
+            };
+            entry.start();
+          });
+          unzip.register(fflate.UnzipInflate);
+          try{
+            reader=file.stream().getReader();
+            while(true){
+              const {done,value}=await reader.read();
+              if(done)break;
+              if(finished)break;
+              unzip.push(value,false);
+              status.textContent='Lendo ZIP · '+scanned+' treinos encontrados';
+            }
+            if(!finished){unzip.push(new Uint8Array(0),true);if(!seenXml)throw Error('XML do Apple Saúde não encontrado no ZIP');if(!xmlDone)throw Error('Leitura do XML incompleta');finished=true;resolve();}
+          }catch(e){fail(e);}finally{reader?.releaseLock();}
+        });
+      }
+      try{
+        if(file.name.toLowerCase().endsWith('.zip')){
+          // Track compressed bytes rather than uncompressed XML size.
+          await parseZip();
+        }else if(file.name.toLowerCase().endsWith('.xml')){
+          await parseXmlStream(file.stream());seenXml=true;
+        }else throw Error('Escolha um arquivo .zip ou .xml');
+        if(!seenXml)throw Error('XML do Apple Saúde não encontrado');
+        status.textContent='Análise concluída: '+scanned+' treinos examinados · '+skipped+' ignorados · '+pending.length+' novos.';
+        if(!pending.length){results.innerHTML='<p class="small muted">Nenhum treino novo no período escolhido.</p>';return;}
+        results.innerHTML='<button class="btn primary block" id="healthConfirm">Importar '+pending.length+' treino(s)</button>';
+        $('#healthConfirm',results).addEventListener('click',()=>{
+          (db.metrics=db.metrics||[]).push(...pending);
+          save();closeSheet();render();toast(pending.length+' treinos importados ✓');
+        });
+      }catch(e){status.textContent='Erro: '+e.message;}
+      finally{running=false;button.disabled=false;}
+    });
+  });
 }
 
 let restT = null;
