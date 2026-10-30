@@ -602,12 +602,13 @@ VIEWS.treino = {
   html() {
     const hist = [...db.wlogs].sort((a, b) => (a.day + a.id) < (b.day + b.id) ? 1 : -1).slice(0, 12);
     const last = (id) => { const l = db.wlogs.filter(w => w.workout_id === id).sort((a, b) => a.day < b.day ? 1 : -1)[0]; return l ? dayLabel(l.day) : 'nunca'; };
-    const wk = (() => { const s = addDays(today(), -parseDay(today()).getDay()); return new Set(db.wlogs.filter(w => w.day >= s).map(w => w.day)).size; })();
+    const allSessions = [...db.wlogs.map(w=>({...w,kind:'wlog'})),...(db.metrics||[]).map(w=>({...w,kind:'metric'}))];
+    const wk = (() => { const start = addDays(today(), -parseDay(today()).getDay()); return new Set(allSessions.filter(w => w.day >= start).map(w => w.day)).size; })();
     return `<div class="spread"><h2>Treinos</h2><button class="btn sm primary" id="newWk">+ Nova ficha</button></div>
     <div class="stats3" style="margin-bottom:12px">
       <div class="stat"><span>Nesta semana</span><b>${wk} ${wk === 1 ? 'dia' : 'dias'}</b></div>
-      <div class="stat"><span>Últimos 30 dias</span><b>${new Set(db.wlogs.filter(w => w.day > addDays(today(), -30)).map(w => w.day)).size}</b></div>
-      <div class="stat"><span>Total</span><b>${db.wlogs.length}</b></div>
+      <div class="stat"><span>Últimos 30 dias</span><b>${new Set(allSessions.filter(w => w.day > addDays(today(), -30)).map(w => w.day)).size}</b></div>
+      <div class="stat"><span>Total</span><b>${allSessions.length}</b></div>
     </div>
     ${db.workouts.length ? db.workouts.map((w, i) => `<div class="card">
       <div class="wk-head"><div class="wk-badge">${esc((shortName(w.name).match(/\b([A-Z])\b/) || [, String.fromCharCode(65 + i)])[1])}</div>
@@ -618,12 +619,12 @@ VIEWS.treino = {
       : '<div class="card empty">Nenhuma ficha ainda. Toque em “Nova ficha”.</div>'}
     <div class="card"><h3>Métricas de treino</h3><p class="small muted">Registre corrida, caminhada, ciclismo, musculação ou outras atividades, com duração, frequência cardíaca, distância e calorias ativas.</p>
       <button class="btn primary block" id="metricAdd">+ Registrar atividade</button>
-      <button class="btn block" id="healthImport" style="margin-top:8px">Importar exportação XML do Apple Saúde</button>
-      <p class="small muted">Importação manual, não sincronização automática. No iPhone: Saúde → perfil → Exportar Todos os Dados de Saúde. Se vier ZIP, extraia o arquivo export.xml no app Arquivos. Arquivos muito grandes podem não abrir no navegador.</p>
+      <button class="btn block" id="healthImport" style="margin-top:8px">Importar ZIP ou XML do Apple Saúde</button>
+      <p class="small muted">Importação manual, não sincronização automática. No iPhone: Saúde → perfil → Exportar Todos os Dados de Saúde. Aceita ZIP original do Saúde; processe no aparelho. Nas próximas importações, os treinos antigos não serão duplicados.</p>
       <div id="metricHistory">${(db.metrics || []).slice().sort((a,b)=>b.day.localeCompare(a.day)).slice(0,15).map(m=>`<div class="item"><div class="t"><b>${esc(m.type)}</b><span>${esc(m.day)} · ${num(m.minutes,0)} min${m.distance_km != null ? ' · '+num(m.distance_km,2)+' km':''}${m.hr_avg != null ? ' · '+num(m.hr_avg,0)+' bpm':''}${m.active_kcal != null ? ' · '+num(m.active_kcal,0)+' kcal ativas':''} · ${esc(m.source || 'manual')}</span></div><button class="x" data-metric-del="${esc(m.id)}" aria-label="Remover">×</button></div>`).join('') || '<div class="empty small">Nenhuma atividade registrada.</div>'}</div>
     </div>
-    <div class="section-title"><h3>Histórico</h3></div>
-    <div class="card">${hist.length ? hist.map(h => `<div class="item"><div class="t"><b>${esc(h.name)}</b><span>${dayLabel(h.day)}</span></div><button class="x" data-undo="${h.id}" aria-label="Remover">×</button></div>`).join('') : '<div class="empty">Seus treinos concluídos aparecem aqui.</div>'}</div>`;
+    <div class="section-title"><h3>Histórico unificado</h3></div>
+    <div class="card">${allSessions.slice().sort((a,b)=>b.day.localeCompare(a.day)).slice(0,30).map(h=>`<div class="item"><div class="t"><b>${esc(h.name||h.type)}</b><span>${esc(h.day)} · ${h.kind==='metric' ? [h.minutes!=null?num(h.minutes,0)+' min':null,h.hr_avg!=null?'FC média '+num(h.hr_avg)+' bpm':null,h.hr_max!=null?'máx '+num(h.hr_max)+' bpm':null,h.active_kcal!=null?num(h.active_kcal)+' kcal':null].filter(Boolean).join(' · ') : 'Ficha concluída'} · ${esc(h.source||'Ritmo')}</span></div></div>`).join('') || '<div class="empty">Seus treinos aparecem aqui.</div>'}</div>`;
   },
   bind(view) {
     $('#newWk', view).addEventListener('click', () => openWorkoutEditor(null));
@@ -685,7 +686,27 @@ function importHealthWorkouts() {
       const status=$('#healthStatus',b),results=$('#healthResults',b),button=$('#healthStart',b);
       running=true;button.disabled=true;results.innerHTML='';
       let scanned=0,skipped=0;
-      const existing=new Set((db.metrics||[]).filter(x=>x.import_key).map(x=>x.import_key));
+      const existing=new Map((db.metrics||[]).filter(x=>x.import_key).map(x=>[x.import_key,x]));
+      const hrByDay=new Map(), updates=[];
+      let hrSamples=0;
+      const dateMs=s=>{const m=String(s).match(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d) ([+-]\d\d)(\d\d)$/);return m?Date.parse(m[1]+'T'+m[2]+m[3]+':'+m[4]):NaN;};
+      const attr=(raw,key)=>{const m=raw.match(new RegExp('(?:^|\\s)'+key+'="([^"]*)"'));return m?m[1]:null;};
+      function parseHeart(raw){
+        if(attr(raw,'type')!=='HKQuantityTypeIdentifierHeartRate')return;
+        const start=attr(raw,'startDate')||'',day=start.slice(0,10);
+        if(day<cutoff||day>today()||hrSamples>180000)return;
+        const bpm=Number(attr(raw,'value'));const time=dateMs(start);
+        if(!Number.isFinite(time)||!Number.isFinite(bpm)||bpm<30||bpm>250)return;
+        const arr=hrByDay.get(day)||[];arr.push([time,bpm,(attr(raw,'sourceName')||'').includes('Watch')]);hrByDay.set(day,arr);hrSamples++;
+      }
+      function workoutHR(start,end){
+        const t0=dateMs(start),t1=dateMs(end);if(!Number.isFinite(t0)||!Number.isFinite(t1))return null;
+        const dates=[start.slice(0,10),end.slice(0,10)];
+        let values=[];for(const d of new Set(dates))for(const p of hrByDay.get(d)||[])if(p[0]>=t0&&p[0]<=t1)values.push(p);
+        const watch=values.filter(p=>p[2]);if(watch.length)values=watch;
+        if(!values.length)return null;
+        return {hr_avg:Math.round(values.reduce((a,p)=>a+p[1],0)/values.length),hr_max:Math.round(Math.max(...values.map(p=>p[1])))};
+      }
       const pending=[];
       const decodeAttrs=(el)=>el.getAttribute.bind(el);
       function parseWorkout(xml){
@@ -697,7 +718,8 @@ function importHealthWorkouts() {
         if(day<cutoff||day>today()||!/^\d{4}-\d\d-\d\d$/.test(day)){skipped++;return;}
         const raw=get('workoutActivityType')||'Atividade',source=get('sourceName')||'';
         const key=[start,end,raw,source].join('|');
-        if(existing.has(key)){skipped++;return;}
+        const previous=existing.get(key);
+        if(previous && previous.hr_avg != null){skipped++;return;}
         const duration=Number(get('duration')||0),unit=get('durationUnit')||'min';
         const minutes=unit==='sec'?duration/60:unit==='hr'?duration*60:duration;
         if(!Number.isFinite(minutes)||minutes<=0){skipped++;return;}
@@ -711,26 +733,31 @@ function importHealthWorkouts() {
         if(kcal!==null&&(energy.getAttribute('unit')||'').toLowerCase()==='kj')kcal/=4.184;
         let km=value(distance,['sum','value']);
         if(km!==null){const u=distance.getAttribute('unit')||'km';if(u==='m')km/=1000;else if(u==='mi')km*=1.609344;}
-        pending.push({id:uid(),type:names[name]||name,day,minutes:Math.round(minutes*10)/10,distance_km:km===null?null:Math.round(km*100)/100,active_kcal:kcal===null?null:Math.round(kcal),hr_avg:null,hr_max:null,source:'Apple Saúde',import_key:key});
-        existing.add(key);
+        const hr=workoutHR(start,end);
+        if(previous){if(hr){updates.push({target:previous,hr});}skipped++;return;}
+        pending.push({id:uid(),type:names[name]||name,day,minutes:Math.round(minutes*10)/10,distance_km:km===null?null:Math.round(km*100)/100,active_kcal:kcal===null?null:Math.round(kcal),hr_avg:hr?.hr_avg??null,hr_max:hr?.hr_max??null,source:'Apple Saúde',import_key:key});
+        existing.set(key,true);
       }
       let buffer='',seenXml=false;
       const decoder=new TextDecoder('utf-8');
       function parseChunk(bytes,final=false){
         buffer+=decoder.decode(bytes,{stream:!final});
-        // Keep only a short tail while passing over non-workout records.
         while(true){
-          const start=buffer.indexOf('<Workout ');
-          if(start<0){buffer=buffer.slice(-32);break;}
-          if(start>0)buffer=buffer.slice(start);
-          const end=buffer.indexOf('</Workout>');
-          if(end<0){
-            // A single malformed or unusually huge workout cannot consume unlimited memory.
-            if(buffer.length>4*1024*1024)throw Error('Registro de treino muito grande');
-            break;
+          const r=buffer.indexOf('<Record '),w=buffer.indexOf('<Workout ');
+          let pos=r<0?w:w<0?r:Math.min(r,w);
+          if(pos<0){buffer=buffer.slice(-48);break;}
+          if(pos>0)buffer=buffer.slice(pos);
+          if(buffer.startsWith('<Record ')){
+            const close=buffer.indexOf('/>');
+            if(close<0){if(buffer.length>100000)throw Error('Registro XML inválido');break;}
+            const rec=buffer.slice(0,close+2);
+            if(rec.includes('HKQuantityTypeIdentifierHeartRate'))parseHeart(rec);
+            buffer=buffer.slice(close+2);
+          }else{
+            const close=buffer.indexOf('</Workout>');
+            if(close<0){if(buffer.length>4*1024*1024)throw Error('Treino XML muito grande');break;}
+            parseWorkout(buffer.slice(0,close+10));buffer=buffer.slice(close+10);
           }
-          parseWorkout(buffer.slice(0,end+10));
-          buffer=buffer.slice(end+10);
         }
       }
       async function parseXmlStream(stream){
@@ -774,11 +801,12 @@ function importHealthWorkouts() {
         }else throw Error('Escolha um arquivo .zip ou .xml');
         if(!seenXml)throw Error('XML do Apple Saúde não encontrado');
         status.textContent='Análise concluída: '+scanned+' treinos examinados · '+skipped+' ignorados · '+pending.length+' novos.';
-        if(!pending.length){results.innerHTML='<p class="small muted">Nenhum treino novo no período escolhido.</p>';return;}
-        results.innerHTML='<button class="btn primary block" id="healthConfirm">Importar '+pending.length+' treino(s)</button>';
+        if(!pending.length && !updates.length){results.innerHTML='<p class="small muted">Nenhum treino novo nem dados adicionais encontrados.</p>';return;}
+        results.innerHTML='<button class="btn primary block" id="healthConfirm">Adicionar '+pending.length+' treino(s) e atualizar '+updates.length+' registros</button>'; 
         $('#healthConfirm',results).addEventListener('click',()=>{
           (db.metrics=db.metrics||[]).push(...pending);
-          save();closeSheet();render();toast(pending.length+' treinos importados ✓');
+          for(const u of updates){u.target.hr_avg=u.hr.hr_avg;u.target.hr_max=u.hr.hr_max;}
+          save();closeSheet();render();toast(pending.length+' novos · '+updates.length+' atualizados ✓');
         });
       }catch(e){status.textContent='Erro: '+e.message;}
       finally{running=false;button.disabled=false;}
