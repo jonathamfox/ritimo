@@ -665,153 +665,60 @@ function openMetricForm() {
 }
 
 function importHealthWorkouts() {
-  if (!window.fflate?.Unzip) return alert('Biblioteca de ZIP não carregada. Verifique sua conexão e tente novamente.');
+  if (!window.Worker || !window.ReadableStream) return alert('Esta versão do navegador não permite a importação. Abra no Safari atualizado.');
+  let worker=null,active=false;
+  const stop=()=>{worker?.terminate();worker=null;active=false;};
   openSheet('Importar Apple Saúde', `
-    <p class="small muted">Selecione o ZIP original exportado pelo aplicativo Saúde. O Ritmo lê os treinos aos poucos, sem carregar o XML completo na memória e sem enviar o arquivo a servidores.</p>
-    <label class="f"><span>Período a importar</span><select id="healthPeriod">
-      <option value="7">Últimos 7 dias</option><option value="15">Últimos 15 dias</option>
-      <option value="30" selected>Últimos 30 dias</option><option value="90">Últimos 90 dias</option>
-      <option value="365">Último ano</option><option value="all">Todo o histórico</option>
-    </select></label>
-    <label class="f"><span>Arquivo ZIP ou XML</span><input type="file" id="healthFile" accept=".zip,.xml,application/zip,application/xml,text/xml"></label>
+    <p class="small muted">Selecione o ZIP original do Apple Saúde. O processamento ocorre no aparelho e agora pode ser cancelado. Não saia desta tela durante a importação.</p>
+    <label class="f"><span>Período</span><select id="healthPeriod"><option value="7">Últimos 7 dias</option><option value="15">Últimos 15 dias</option><option value="30" selected>Últimos 30 dias</option><option value="90">Últimos 90 dias</option><option value="365">Último ano</option><option value="all">Todo o histórico</option></select></label>
+    <label class="f"><span>ZIP ou XML do Apple Saúde</span><input type="file" id="healthFile" accept=".zip,.xml,application/zip,application/xml,text/xml"></label>
     <button class="btn primary block" id="healthStart">Analisar arquivo</button>
+    <button class="btn block" id="healthCancel" style="margin-top:8px;display:none">Cancelar análise</button>
     <p class="small muted" id="healthStatus" aria-live="polite"></p>
-    <div id="healthResults"></div>`, b => {
-    let running=false;
-    $('#healthStart',b).addEventListener('click',async()=>{
-      if(running)return;
-      const file=$('#healthFile',b).files[0];if(!file)return toast('Selecione o arquivo');
-      const period=$('#healthPeriod',b).value;
-      const cutoff=period==='all'?'0000-00-00':addDays(today(),-Number(period));
-      const status=$('#healthStatus',b),results=$('#healthResults',b),button=$('#healthStart',b);
-      running=true;button.disabled=true;results.innerHTML='';
-      let scanned=0,skipped=0;
-      const existing=new Map((db.metrics||[]).filter(x=>x.import_key).map(x=>[x.import_key,x]));
-      const hrByDay=new Map(), updates=[];
-      let hrSamples=0;
-      const dateMs=s=>{const m=String(s).match(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d) ([+-]\d\d)(\d\d)$/);return m?Date.parse(m[1]+'T'+m[2]+m[3]+':'+m[4]):NaN;};
-      const attr=(raw,key)=>{const m=raw.match(new RegExp('(?:^|\\s)'+key+'="([^"]*)"'));return m?m[1]:null;};
-      function parseHeart(raw){
-        if(attr(raw,'type')!=='HKQuantityTypeIdentifierHeartRate')return;
-        const start=attr(raw,'startDate')||'',day=start.slice(0,10);
-        if(day<cutoff||day>today()||hrSamples>180000)return;
-        const bpm=Number(attr(raw,'value'));const time=dateMs(start);
-        if(!Number.isFinite(time)||!Number.isFinite(bpm)||bpm<30||bpm>250)return;
-        const arr=hrByDay.get(day)||[];arr.push([time,bpm,(attr(raw,'sourceName')||'').includes('Watch')]);hrByDay.set(day,arr);hrSamples++;
-      }
-      function workoutHR(start,end){
-        const t0=dateMs(start),t1=dateMs(end);if(!Number.isFinite(t0)||!Number.isFinite(t1))return null;
-        const dates=[start.slice(0,10),end.slice(0,10)];
-        let values=[];for(const d of new Set(dates))for(const p of hrByDay.get(d)||[])if(p[0]>=t0&&p[0]<=t1)values.push(p);
-        const watch=values.filter(p=>p[2]);if(watch.length)values=watch;
-        if(!values.length)return null;
-        return {hr_avg:Math.round(values.reduce((a,p)=>a+p[1],0)/values.length),hr_max:Math.round(Math.max(...values.map(p=>p[1])))};
-      }
-      const pending=[];
-      const decodeAttrs=(el)=>el.getAttribute.bind(el);
-      function parseWorkout(xml){
-        const doc=new DOMParser().parseFromString('<root>'+xml+'</root>','application/xml');
-        if(doc.querySelector('parsererror'))return;
-        const w=doc.querySelector('Workout');if(!w)return;
-        scanned++;
-        const get=decodeAttrs(w),start=get('startDate')||'',end=get('endDate')||'',day=start.slice(0,10);
-        if(day<cutoff||day>today()||!/^\d{4}-\d\d-\d\d$/.test(day)){skipped++;return;}
-        const raw=get('workoutActivityType')||'Atividade',source=get('sourceName')||'';
-        const key=[start,end,raw,source].join('|');
-        const previous=existing.get(key);
-        if(previous && previous.hr_avg != null){skipped++;return;}
-        const duration=Number(get('duration')||0),unit=get('durationUnit')||'min';
-        const minutes=unit==='sec'?duration/60:unit==='hr'?duration*60:duration;
-        if(!Number.isFinite(minutes)||minutes<=0){skipped++;return;}
-        const name=raw.replace(/^HKWorkoutActivityType/,'');
-        const names={Running:'Corrida',Walking:'Caminhada',Cycling:'Ciclismo',TraditionalStrengthTraining:'Musculação',FunctionalStrengthTraining:'Treino funcional',Swimming:'Natação',HighIntensityIntervalTraining:'HIIT',CrossTraining:'CrossFit',Elliptical:'Elíptico',Rowing:'Remo',Yoga:'Yoga',Other:'Outro'};
-        const stats=[...w.getElementsByTagName('WorkoutStatistics')];
-        const stat=suffix=>stats.find(x=>(x.getAttribute('type')||'').endsWith(suffix));
-        const value=(node,keys)=>{if(!node)return null;for(const k of keys){const v=node.getAttribute(k);if(v!==null&&v!==''&&Number.isFinite(Number(v)))return Number(v);}return null;};
-        const energy=stat('ActiveEnergyBurned'),distance=stat('DistanceWalkingRunning')||stat('DistanceCycling')||stat('DistanceSwimming')||stat('Distance');
-        let kcal=value(energy,['sum','value']);
-        if(kcal!==null&&(energy.getAttribute('unit')||'').toLowerCase()==='kj')kcal/=4.184;
-        let km=value(distance,['sum','value']);
-        if(km!==null){const u=distance.getAttribute('unit')||'km';if(u==='m')km/=1000;else if(u==='mi')km*=1.609344;}
-        const hr=workoutHR(start,end);
-        if(previous){if(hr){updates.push({target:previous,hr});}skipped++;return;}
-        pending.push({id:uid(),type:names[name]||name,day,minutes:Math.round(minutes*10)/10,distance_km:km===null?null:Math.round(km*100)/100,active_kcal:kcal===null?null:Math.round(kcal),hr_avg:hr?.hr_avg??null,hr_max:hr?.hr_max??null,source:'Apple Saúde',import_key:key});
-        existing.set(key,true);
-      }
-      let buffer='',seenXml=false;
-      const decoder=new TextDecoder('utf-8');
-      function parseChunk(bytes,final=false){
-        buffer+=decoder.decode(bytes,{stream:!final});
-        while(true){
-          const r=buffer.indexOf('<Record '),w=buffer.indexOf('<Workout ');
-          let pos=r<0?w:w<0?r:Math.min(r,w);
-          if(pos<0){buffer=buffer.slice(-48);break;}
-          if(pos>0)buffer=buffer.slice(pos);
-          if(buffer.startsWith('<Record ')){
-            const close=buffer.indexOf('/>');
-            if(close<0){if(buffer.length>100000)throw Error('Registro XML inválido');break;}
-            const rec=buffer.slice(0,close+2);
-            if(rec.includes('HKQuantityTypeIdentifierHeartRate'))parseHeart(rec);
-            buffer=buffer.slice(close+2);
+    <div id="healthResults"></div>
+  `, b=>{
+    const start=$('#healthStart',b),cancel=$('#healthCancel',b),status=$('#healthStatus',b),results=$('#healthResults',b);
+    const setRunning=v=>{active=v;start.disabled=v;cancel.style.display=v?'block':'none';};
+    cancel.addEventListener('click',()=>{stop();setRunning(false);status.textContent='Análise cancelada. Seus dados não foram alterados.';});
+    start.addEventListener('click',()=>{
+      if(active)return;
+      const file=$('#healthFile',b).files[0];if(!file)return toast('Selecione um ZIP ou XML.');
+      if(!/\.(zip|xml)$/i.test(file.name))return toast('Arquivo precisa ser ZIP ou XML.');
+      results.innerHTML='';setRunning(true);status.textContent='Iniciando análise…';
+      try{worker=new Worker('health-worker.js?v=20261030e');}
+      catch(e){setRunning(false);status.textContent='Não foi possível iniciar o leitor: '+e.message;return;}
+      worker.onerror=e=>{status.textContent='Falha ao processar o arquivo. Tente novamente.';stop();setRunning(false);};
+      worker.onmessage=event=>{
+        const msg=event.data;
+        if(!active)return;
+        if(msg.kind==='progress'){
+          status.textContent='Processando '+msg.percent+'% do ZIP · '+msg.scanned+' treinos analisados';
+          return;
+        }
+        stop();setRunning(false);
+        if(msg.kind==='error'){status.textContent='Erro na leitura: '+msg.message;return;}
+        const existing=new Map((db.metrics||[]).filter(x=>x.import_key).map(x=>[x.import_key,x]));
+        const additions=[],updates=[];
+        for(const item of msg.workouts||[]){
+          const old=existing.get(item.import_key);
+          if(old){
+            if(item.hr_avg!=null&&(old.hr_avg==null||old.hr_max==null))updates.push({old,item});
           }else{
-            const close=buffer.indexOf('</Workout>');
-            if(close<0){if(buffer.length>4*1024*1024)throw Error('Treino XML muito grande');break;}
-            parseWorkout(buffer.slice(0,close+10));buffer=buffer.slice(close+10);
+            additions.push({id:uid(),...item});existing.set(item.import_key,item);
           }
         }
-      }
-      async function parseXmlStream(stream){
-        const reader=stream.getReader();try{while(true){const {done,value}=await reader.read();if(done)break;parseChunk(value);}}finally{reader.releaseLock();}
-        parseChunk(new Uint8Array(0),true);
-      }
-      async function parseZip(){
-        return new Promise(async(resolve,reject)=>{
-          let finished=false,xmlDone=false,reader;
-          const fail=e=>{if(!finished){finished=true;reject(e instanceof Error?e:new Error(String(e)));}};
-          const unzip=new fflate.Unzip(entry=>{
-            if(!/(^|\/)export(ar)?\.xml$/i.test(entry.name) && !/(^|\/)export\.xml$/i.test(entry.name)){entry.ondata=()=>{};return;}
-            if(seenXml){entry.ondata=()=>{};return;}
-            seenXml=true;
-            entry.ondata=(err,bytes,final)=>{
-              if(err)return fail(err);
-              try{parseChunk(bytes,final);if(final)xmlDone=true;}catch(e){fail(e);}
-            };
-            entry.start();
-          });
-          unzip.register(fflate.UnzipInflate);
-          try{
-            reader=file.stream().getReader();
-            while(true){
-              const {done,value}=await reader.read();
-              if(done)break;
-              if(finished)break;
-              unzip.push(value,false);
-              status.textContent='Lendo ZIP · '+scanned+' treinos encontrados';
-            }
-            if(!finished){unzip.push(new Uint8Array(0),true);if(!seenXml)throw Error('XML do Apple Saúde não encontrado no ZIP');if(!xmlDone)throw Error('Leitura do XML incompleta');finished=true;resolve();}
-          }catch(e){fail(e);}finally{reader?.releaseLock();}
-        });
-      }
-      try{
-        if(file.name.toLowerCase().endsWith('.zip')){
-          // Track compressed bytes rather than uncompressed XML size.
-          await parseZip();
-        }else if(file.name.toLowerCase().endsWith('.xml')){
-          await parseXmlStream(file.stream());seenXml=true;
-        }else throw Error('Escolha um arquivo .zip ou .xml');
-        if(!seenXml)throw Error('XML do Apple Saúde não encontrado');
-        status.textContent='Análise concluída: '+scanned+' treinos examinados · '+skipped+' ignorados · '+pending.length+' novos.';
-        if(!pending.length && !updates.length){results.innerHTML='<p class="small muted">Nenhum treino novo nem dados adicionais encontrados.</p>';return;}
-        results.innerHTML='<button class="btn primary block" id="healthConfirm">Adicionar '+pending.length+' treino(s) e atualizar '+updates.length+' registros</button>'; 
+        status.textContent='Análise concluída: '+msg.scanned+' treinos verificados. '+additions.length+' novos, '+updates.length+' com batimentos para complementar.';
+        if(!additions.length&&!updates.length){results.innerHTML='<p class="small muted">Nenhum treino novo ou dado adicional encontrado.</p>';return;}
+        results.innerHTML='<button class="btn primary block" id="healthConfirm">Salvar '+additions.length+' novos e atualizar '+updates.length+'</button>';
         $('#healthConfirm',results).addEventListener('click',()=>{
-          (db.metrics=db.metrics||[]).push(...pending);
-          for(const u of updates){u.target.hr_avg=u.hr.hr_avg;u.target.hr_max=u.hr.hr_max;}
-          save();closeSheet();render();toast(pending.length+' novos · '+updates.length+' atualizados ✓');
-        });
-      }catch(e){status.textContent='Erro: '+e.message;}
-      finally{running=false;button.disabled=false;}
+          (db.metrics=db.metrics||[]).push(...additions);
+          for(const u of updates){u.old.hr_avg=u.item.hr_avg;u.old.hr_max=u.item.hr_max;}
+          save();closeSheet();render();toast('Treinos atualizados ✓');
+        },{once:true});
+      };
+      worker.postMessage({file,period:$('#healthPeriod',b).value});
     });
-  });
+  },stop);
 }
 
 let restT = null;
