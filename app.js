@@ -52,7 +52,7 @@ const uid = () => 'u' + (db.nextId++);
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
 const BASE = (window.BASE_FOODS || []).map((f, i) => ({
-  id: 'b:' + norm(f[0]), name: f[0], portion_g: f[1], kcal: f[2], protein: f[3], carbs: f[4], fat: f[5], unit: f[6] || null, unit_g: f[7] || null, source: 'base'
+  id: 'b:' + norm(f[0]), name: f[0], portion_g: f[1], kcal: f[2], protein: f[3], carbs: f[4], fat: f[5], fiber: Number.isFinite(f[8]) ? f[8] : null, unit: f[6] || null, unit_g: f[7] || null, source: 'base'
 }));
 // unidade caseira do alimento (ex.: 1 ovo = 50 g); o usuário pode mudar em qualquer alimento
 const foodUnit = (f) => {
@@ -103,8 +103,8 @@ function targets() {
   };
 }
 function dayTotals(day) {
-  const t = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
-  for (const l of db.logs[day] || []) { t.kcal += l.kcal; t.protein += l.protein; t.carbs += l.carbs; t.fat += l.fat; }
+  const t = { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, fiberKnown: 0 };
+  for (const l of db.logs[day] || []) { t.kcal += l.kcal; t.protein += l.protein; t.carbs += l.carbs; t.fat += l.fat; if (Number.isFinite(l.fiber)) { t.fiber += l.fiber; t.fiberKnown++; } }
   return t;
 }
 const trainedOn = (day) => db.wlogs.filter(w => w.day === day);
@@ -269,6 +269,9 @@ VIEWS.hoje = {
       </div>
       <div class="macros">${macroBlock('Carboidrato', tot.carbs, t.carbs, 'var(--carb)')}${macroBlock('Proteína', tot.protein, t.protein, 'var(--prot)')}${macroBlock('Gordura', tot.fat, t.fat, 'var(--fat)')}</div>
     </div>
+    <div class="card"><div class="spread"><h3 style="margin:0">Fibras</h3><span class="muted small">${num(tot.fiber,1)} / ${num(db.profile.fiber_target ?? 30)} g</span></div>
+      <div class="bar" style="margin-top:12px"><i style="width:${Math.min(100,tot.fiber/(db.profile.fiber_target ?? 30)*100)}%;background:var(--ok)"></i></div>
+      <p class="small muted">Apenas alimentos com fibras informadas entram na soma. ${tot.fiberKnown ? tot.fiberKnown + ' registro(s) com dados.' : 'Nenhum registro com dados de fibras.'} Dados ausentes não significam zero.</p></div>
     <div class="card">
       <div class="spread"><h3 style="margin:0">Água</h3><span class="muted small"><b style="color:var(--text)">${num(water / 1000, 2)} L</b> de ${num(t.water / 1000, 1)} L</span></div>
       <div class="water-cups">${Array.from({ length: Math.min(cups, 16) }, (_, i) => `<div class="cup ${i < cupsOn ? 'on' : ''}"></div>`).join('')}</div>
@@ -393,7 +396,7 @@ async function searchOnline(q, b) {
       const name = (p.product_name_pt || p.product_name || '').trim();
       if (kcal == null || !name) return null;
       return { name, brand: (p.brands || '').split(',')[0].trim() || null, barcode: p.code || null, portion_g: Number(p.serving_quantity) || 100,
-        kcal: r1(kcal), protein: r1(n.proteins_100g || 0), carbs: r1(n.carbohydrates_100g || 0), fat: r1(n.fat_100g || 0), source: 'openfoodfacts' };
+        kcal: r1(kcal), protein: r1(n.proteins_100g || 0), carbs: r1(n.carbohydrates_100g || 0), fat: r1(n.fat_100g || 0), fiber: n.fiber_100g == null ? null : r1(n.fiber_100g), source: 'openfoodfacts' };
     }).filter(Boolean).slice(0, 20);
     if (!list.length) { box.innerHTML = '<div class="empty small">Nenhum produto encontrado. Tente outro nome ou cadastre pelo rótulo.</div>'; return; }
     box.innerHTML = '<p class="muted small" style="margin:14px 2px 2px">Produtos de mercado <span class="tag">confira com o rótulo</span></p>' + list.map((f, i) => {
@@ -407,7 +410,7 @@ async function searchOnline(q, b) {
 }
 function openQty(food, meal, back) {
   if (!food) return;
-  const calc = (g) => ({ kcal: food.kcal * g / 100, protein: food.protein * g / 100, carbs: food.carbs * g / 100, fat: food.fat * g / 100 });
+  const calc = (g) => ({ kcal: food.kcal * g / 100, protein: food.protein * g / 100, carbs: food.carbs * g / 100, fat: food.fat * g / 100, fiber: Number.isFinite(food.fiber) ? food.fiber * g / 100 : null });
   const U = foodUnit(food);
   let mode = U ? 'un' : 'g';
   const g0 = food.portion_g || 100;
@@ -451,7 +454,7 @@ function openQty(food, meal, back) {
       const g = grams();
       if (g <= 0) return toast('Informe a quantidade');
       const m = calc(g), d = state.date;
-      const entry = { id: uid(), meal: $('#qtyMeal', b).value, food_id: food.id, name: food.name, grams: r1(g), kcal: r1(m.kcal), protein: r1(m.protein), carbs: r1(m.carbs), fat: r1(m.fat) };
+      const entry = { id: uid(), meal: $('#qtyMeal', b).value, food_id: food.id, name: food.name, grams: r1(g), kcal: r1(m.kcal), protein: r1(m.protein), carbs: r1(m.carbs), fat: r1(m.fat), fiber: m.fiber == null ? null : r1(m.fiber) };
       if (mode === 'un') { entry.units = val(); entry.unit = U.unit; }
       (db.logs[d] = db.logs[d] || []).push(entry);
       db.recent = [food.id, ...db.recent.filter(i => i !== food.id)].slice(0, 20);
@@ -501,6 +504,7 @@ function openNewFood(meal, pre = {}) {
       <label class="f"><span>Carb</span><input name="carbs" type="number" step="any" inputmode="decimal" value="${pre.carbs ?? ''}"></label>
       <label class="f"><span>Prot</span><input name="protein" type="number" step="any" inputmode="decimal" value="${pre.protein ?? ''}"></label>
       <label class="f"><span>Gord</span><input name="fat" type="number" step="any" inputmode="decimal" value="${pre.fat ?? ''}"></label>
+      <label class="f"><span>Fibras (opcional)</span><input name="fiber" type="number" min="0" step="any" inputmode="decimal" value="${pre.fiber ?? ''}"></label>
     </div>
     <button class="btn primary block" type="submit">${editing ? 'Salvar' : 'Salvar e adicionar'}</button>
     ${editing ? '<button class="btn danger block" type="button" id="nfDel" style="margin-top:10px">Excluir alimento</button>' : ''}
@@ -513,7 +517,7 @@ function openNewFood(meal, pre = {}) {
       const portion = n('portion_g') || 100, f = seg.base === 'porcao' ? 100 / portion : 1;
       const food = {
         id: editing ? pre.id : uid(), name: fd.name.trim(), brand: fd.brand.trim() || null, barcode: fd.barcode.trim() || null,
-        portion_g: portion, unit: (fd.unit || '').trim().toLowerCase() || null, unit_g: n('unit_g') || null, kcal: r1(n('kcal') * f), protein: r1(n('protein') * f), carbs: r1(n('carbs') * f), fat: r1(n('fat') * f), source: 'usuario'
+        portion_g: portion, unit: (fd.unit || '').trim().toLowerCase() || null, unit_g: n('unit_g') || null, kcal: r1(n('kcal') * f), protein: r1(n('protein') * f), carbs: r1(n('carbs') * f), fat: r1(n('fat') * f), fiber: fd.fiber === '' ? null : r1(n('fiber') * f), source: 'usuario'
       };
       if (!food.name) return toast('Informe o nome');
       if (db.units) delete db.units[food.id];
