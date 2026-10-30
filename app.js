@@ -914,7 +914,7 @@ VIEWS.perfil = {
       </div>
       <p class="small muted">Os três percentuais devem somar 100%. Metas são referências ajustáveis, não limites clínicos.</p>
       <label class="f"><span>Meta de fibras (g/dia)</span><input name="fiber_target" type="number" min="10" max="70" step="1" inputmode="numeric" value="${esc(p.fiber_target ?? 30)}"></label>
-      <p class="small muted">O acompanhamento de fibras estará disponível para alimentos com dados de fibras cadastrados.</p>
+      <p class="small muted">A lista de alimentos já traz fibras; nos alimentos que você cadastrar, preencha pelo rótulo.</p>
       <label class="f"><span>Meta de água (ml) — vazio = automático</span><input name="water_target" type="number" inputmode="numeric" value="${esc(p.water_target || '')}"></label>
       <button class="btn primary block" type="submit">Salvar</button>
     </form>
@@ -926,7 +926,7 @@ VIEWS.perfil = {
       <p class="small muted" style="margin:0">iPhone: no Safari, toque em <b>Compartilhar</b> › <b>Adicionar à Tela de Início</b>.<br>Android: no Chrome, menu <b>⋮</b> › <b>Instalar app</b>.<br>Instalado, o app abre em tela cheia e seus dados ficam mais protegidos.</p>
     </div>
     <button class="btn danger block" id="wipe" style="margin-bottom:12px">Apagar todos os dados deste celular</button>
-    <p class="small muted" style="text-align:center">Ritmo · versão 2.2</p>`;
+    <p class="small muted" style="text-align:center">Ritmo · versão 2.3</p>`;
   },
   bind(view) {
     const seg = { sex: db.profile.sex, goal: db.profile.goal || 'manter' };
