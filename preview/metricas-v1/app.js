@@ -666,8 +666,8 @@ function openMetricForm() {
 
 function importHealthWorkouts() {
   if (!window.Worker || !window.ReadableStream) return alert('Esta versão do navegador não permite a importação. Abra no Safari atualizado.');
-  let worker=null,active=false;
-  const stop=()=>{worker?.terminate();worker=null;active=false;};
+  let worker=null,active=false,watchdog=null,hasProgress=false;
+  const stop=()=>{if(watchdog)clearTimeout(watchdog);watchdog=null;worker?.terminate();worker=null;active=false;};
   openSheet('Importar Apple Saúde', `
     <p class="small muted">Selecione o ZIP original do Apple Saúde. O processamento ocorre no aparelho e agora pode ser cancelado. Não saia desta tela durante a importação.</p>
     <label class="f"><span>Período</span><select id="healthPeriod"><option value="7">Últimos 7 dias</option><option value="15">Últimos 15 dias</option><option value="30" selected>Últimos 30 dias</option><option value="90">Últimos 90 dias</option><option value="365">Último ano</option><option value="all">Todo o histórico</option></select></label>
@@ -684,15 +684,18 @@ function importHealthWorkouts() {
       if(active)return;
       const file=$('#healthFile',b).files[0];if(!file)return toast('Selecione um ZIP ou XML.');
       if(!/\.(zip|xml)$/i.test(file.name))return toast('Arquivo precisa ser ZIP ou XML.');
-      results.innerHTML='';setRunning(true);status.textContent='Iniciando análise…';
-      try{worker=new Worker('health-worker.js?v=20261030e');}
+      results.innerHTML='';setRunning(true);hasProgress=false;status.textContent='Iniciando análise…';
+      try{worker=new Worker('health-worker.js?v=20261030f');
+        watchdog=setTimeout(()=>{if(active&&!hasProgress)status.textContent='O leitor não respondeu. Toque em Cancelar análise e tente abrir o link no Safari.';},12000);
+      }
       catch(e){setRunning(false);status.textContent='Não foi possível iniciar o leitor: '+e.message;return;}
       worker.onerror=e=>{status.textContent='Falha ao processar o arquivo. Tente novamente.';stop();setRunning(false);};
       worker.onmessage=event=>{
         const msg=event.data;
         if(!active)return;
         if(msg.kind==='progress'){
-          status.textContent='Processando '+msg.percent+'% do ZIP · '+msg.scanned+' treinos analisados';
+          hasProgress=true;if(watchdog){clearTimeout(watchdog);watchdog=null;}
+          status.textContent=(msg.stage||'Processando…')+' '+msg.percent+'% · '+(msg.scanned||0)+' treinos analisados';
           return;
         }
         stop();setRunning(false);
