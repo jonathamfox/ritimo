@@ -694,7 +694,7 @@ function importHealthWorkouts() {
         const w=doc.querySelector('Workout');if(!w)return;
         scanned++;
         const get=decodeAttrs(w),start=get('startDate')||'',end=get('endDate')||'',day=start.slice(0,10);
-        if(day<cutoff||day>today()||!/^\\d{4}-\\d\\d-\\d\\d$/.test(day)){skipped++;return;}
+        if(day<cutoff||day>today()||!/^\d{4}-\d\d-\d\d$/.test(day)){skipped++;return;}
         const raw=get('workoutActivityType')||'Atividade',source=get('sourceName')||'';
         const key=[start,end,raw,source].join('|');
         if(existing.has(key)){skipped++;return;}
@@ -742,7 +742,7 @@ function importHealthWorkouts() {
           let finished=false,xmlDone=false,reader;
           const fail=e=>{if(!finished){finished=true;reject(e instanceof Error?e:new Error(String(e)));}};
           const unzip=new fflate.Unzip(entry=>{
-            if(!/(^|\\/)export(ar)?\\.xml$/i.test(entry.name) && !/(^|\\/)export\\.xml$/i.test(entry.name)){entry.ondata=()=>{};return;}
+            if(!/(^|\/)export(ar)?\.xml$/i.test(entry.name) && !/(^|\/)export\.xml$/i.test(entry.name)){entry.ondata=()=>{};return;}
             if(seenXml){entry.ondata=()=>{};return;}
             seenXml=true;
             entry.ondata=(err,bytes,final)=>{
