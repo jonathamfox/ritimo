@@ -142,7 +142,9 @@ $('#tabs').addEventListener('click', (e) => { const b = e.target.closest('button
 window.addEventListener('hashchange', () => { const t = location.hash.slice(1); if (t && t !== state.tab && VIEWS[t]) { state.tab = t; render(); } });
 
 function render() {
-  const view = $('#view');
+  // recria o container a cada tela para não acumular ouvintes de toque
+  const oldView = $('#view'), view = oldView.cloneNode(false);
+  oldView.replaceWith(view);
   if (!db.profile) { $('#tabs').classList.add('hide'); $('#topRight').textContent = ''; view.innerHTML = viewWelcome(); bindWelcome(view); return; }
   $('#tabs').classList.remove('hide');
   $$('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
@@ -814,7 +816,7 @@ VIEWS.perfil = {
       <p class="small muted" style="margin:0">iPhone: no Safari, toque em <b>Compartilhar</b> › <b>Adicionar à Tela de Início</b>.<br>Android: no Chrome, menu <b>⋮</b> › <b>Instalar app</b>.<br>Instalado, o app abre em tela cheia e seus dados ficam mais protegidos.</p>
     </div>
     <button class="btn danger block" id="wipe" style="margin-bottom:12px">Apagar todos os dados deste celular</button>
-    <p class="small muted" style="text-align:center">Ritmo · versão 1.2</p>`;
+    <p class="small muted" style="text-align:center">Ritmo · versão 1.3</p>`;
   },
   bind(view) {
     const seg = { sex: db.profile.sex, goal: db.profile.goal || 'manter' };
