@@ -1,8 +1,9 @@
 /* Ritmo Apple Saúde: importação em worker, sem bloquear a interface. */
 'use strict';
-importScripts('https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js');
+// Carregar a biblioteca apenas após informar que o worker iniciou.
 self.onmessage = async event => {
  const {file,period} = event.data;
+ postMessage({kind:'progress',percent:0,stage:'Leitor iniciado. Preparando ZIP…'});
  const cutoff = period==='all'?'0000-00-00':(()=>{const d=new Date();d.setDate(d.getDate()-Number(period));return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')})();
  const today=(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')})();
  const workouts=[],hr=new Map();let records=0,scanned=0,bytes=0,seen=false,doneXml=false;
@@ -55,9 +56,12 @@ self.onmessage = async event => {
    }
   }
  }
- function progress(){if(bytes-lastProgress>1024*1024){lastProgress=bytes;postMessage({kind:'progress',percent:Math.min(99,Math.round(bytes/file.size*100)),scanned,records});}}
+ function progress(force=false){if(force||bytes-lastProgress>512*1024){lastProgress=bytes;postMessage({kind:'progress',stage:'Analisando histórico…',percent:Math.min(99,Math.round(bytes/file.size*100)),scanned,records});}}
  try {
   if(file.name.toLowerCase().endsWith('.zip')){
+   postMessage({kind:'progress',percent:0,stage:'Carregando descompactador…'});
+   if(!self.fflate)importScripts('https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js');
+   postMessage({kind:'progress',percent:0,stage:'Lendo arquivo compactado…'});
    await new Promise(async(resolve,reject)=>{
     let completed=false,reader;
     const fail=e=>{if(!completed){completed=true;reject(e);}};
@@ -73,7 +77,10 @@ self.onmessage = async event => {
      while(!completed){
       const {done,value}=await reader.read();if(done)break;
       bytes+=value.byteLength;
-      unzip.push(value,false);progress();
+      progress();
+      unzip.push(value,false);
+      // Libera a fila de mensagens do worker entre blocos grandes.
+      await new Promise(resolve=>setTimeout(resolve,0));
       if(completed)break;
      }
      if(!completed){unzip.push(new Uint8Array(0),true);if(!seen||!doneXml)throw Error('XML do Apple Saúde incompleto ou ausente');completed=true;resolve();}
@@ -82,6 +89,7 @@ self.onmessage = async event => {
   }else if(file.name.toLowerCase().endsWith('.xml')){
    const reader=file.stream().getReader();try{while(true){const {done,value}=await reader.read();if(done)break;bytes+=value.byteLength;parseChunk(value);progress();}parseChunk(new Uint8Array(0),true);}finally{reader.releaseLock();}
   }else throw Error('Selecione ZIP ou XML.');
+  postMessage({kind:'progress',stage:'Relacionando batimentos aos treinos…',percent:99,scanned,records});
   for(const w of workouts){
    const t0=ms(w.start),t1=ms(w.end);let n=0,total=0,max=0;
    if(Number.isFinite(t0)&&Number.isFinite(t1)){
