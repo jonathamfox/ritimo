@@ -52,7 +52,7 @@ const uid = () => 'u' + (db.nextId++);
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
 const BASE = (window.BASE_FOODS || []).map((f, i) => ({
-  id: 'b' + i, name: f[0], portion_g: f[1], kcal: f[2], protein: f[3], carbs: f[4], fat: f[5], unit: f[6] || null, unit_g: f[7] || null, source: 'base'
+  id: 'b:' + norm(f[0]), name: f[0], portion_g: f[1], kcal: f[2], protein: f[3], carbs: f[4], fat: f[5], unit: f[6] || null, unit_g: f[7] || null, source: 'base'
 }));
 // unidade caseira do alimento (ex.: 1 ovo = 50 g); o usuário pode mudar em qualquer alimento
 const foodUnit = (f) => {
@@ -356,15 +356,51 @@ function openAddFood(meal) {
     const draw = () => {
       const { title, list } = searchFoods($('#foodQ', b).value);
       $('#foodRes', b).innerHTML = (title ? `<p class="muted small" style="margin:14px 2px 2px">${title}</p>` : '') +
-        (list.length ? list.map(foodRow).join('') : `<div class="empty">Nada encontrado.<br><button class="link" id="newFromQ">Cadastrar “${esc($('#foodQ', b).value)}”</button></div>`);
+        (list.length ? list.map(foodRow).join('') : `<div class="empty">Nada na lista do app.<br><button class="link" id="newFromQ">Cadastrar “${esc($('#foodQ', b).value)}”</button></div>`) +
+        ($('#foodQ', b).value.trim().length >= 3 ? `<button class="add-row" id="webQ" style="margin-top:10px">🔎 Buscar “${esc($('#foodQ', b).value.trim())}” em produtos de mercado</button><div id="webRes"></div>` : '');
       $('#newFromQ', b)?.addEventListener('click', () => openNewFood(meal, { name: $('#foodQ', b).value }));
+      $('#webQ', b)?.addEventListener('click', () => searchOnline($('#foodQ', b).value.trim(), b));
     };
     $('#foodQ', b).addEventListener('input', draw);
-    $('#foodRes', b).addEventListener('click', (e) => { const r = e.target.closest('[data-food]'); if (r) openQty(foodById(r.dataset.food), meal); });
+    $('#foodRes', b).addEventListener('click', (e) => {
+      const w = e.target.closest('[data-web]');
+      if (w) { const f = webCache[w.dataset.web]; if (!f) return; db.foods = db.foods.filter(x => x.barcode !== f.barcode); db.foods.unshift({ ...f, id: uid() }); save(); return openQty(db.foods[0], meal); }
+      const r = e.target.closest('[data-food]'); if (r) openQty(foodById(r.dataset.food), meal);
+    });
     $('#scanBtn', b).addEventListener('click', () => openScanner(meal));
     $('#newFoodBtn', b).addEventListener('click', () => openNewFood(meal, {}));
     draw();
   });
+}
+// busca de produtos industrializados na base aberta Open Food Facts (precisa de internet)
+const webCache = {};
+async function searchOnline(q, b) {
+  const box = $('#webRes', b), btn = $('#webQ', b);
+  if (btn) btn.remove();
+  box.innerHTML = '<div class="empty small">Buscando produtos…</div>';
+  try {
+    const url = 'https://world.openfoodfacts.org/cgi/search.pl?search_simple=1&action=process&json=1&page_size=30'
+      + '&tagtype_0=countries&tag_contains_0=contains&tag_0=brazil'
+      + '&fields=code,product_name,product_name_pt,brands,nutriments,serving_quantity&search_terms=' + encodeURIComponent(q);
+    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 12000);
+    const j = await (await fetch(url, { signal: ctl.signal })).json(); clearTimeout(t);
+    const list = (j.products || []).map(p => {
+      const n = p.nutriments || {};
+      const kcal = n['energy-kcal_100g'] != null ? n['energy-kcal_100g'] : (n.energy_100g != null ? n.energy_100g / 4.184 : null);
+      const name = (p.product_name_pt || p.product_name || '').trim();
+      if (kcal == null || !name) return null;
+      return { name, brand: (p.brands || '').split(',')[0].trim() || null, barcode: p.code || null, portion_g: Number(p.serving_quantity) || 100,
+        kcal: r1(kcal), protein: r1(n.proteins_100g || 0), carbs: r1(n.carbohydrates_100g || 0), fat: r1(n.fat_100g || 0), source: 'openfoodfacts' };
+    }).filter(Boolean).slice(0, 20);
+    if (!list.length) { box.innerHTML = '<div class="empty small">Nenhum produto encontrado. Tente outro nome ou cadastre pelo rótulo.</div>'; return; }
+    box.innerHTML = '<p class="muted small" style="margin:14px 2px 2px">Produtos de mercado <span class="tag">confira com o rótulo</span></p>' + list.map((f, i) => {
+      const k = 'w' + i; webCache[k] = f;
+      return `<button class="res" data-web="${k}"><div class="t"><b>${esc(f.name)}${f.brand ? ` <span class="tag">${esc(f.brand)}</span>` : ''}</b>
+        <span>${num(f.kcal)} kcal · P ${num(f.protein, 1)} · C ${num(f.carbs, 1)} · G ${num(f.fat, 1)} <span class="muted">(100 g)</span></span></div><span class="plus">+</span></button>`;
+    }).join('');
+  } catch {
+    box.innerHTML = '<div class="empty small">Não consegui buscar agora (sem internet?). Tente de novo ou cadastre pelo rótulo.</div>';
+  }
 }
 function openQty(food, meal, back) {
   if (!food) return;
@@ -778,7 +814,7 @@ VIEWS.perfil = {
       <p class="small muted" style="margin:0">iPhone: no Safari, toque em <b>Compartilhar</b> › <b>Adicionar à Tela de Início</b>.<br>Android: no Chrome, menu <b>⋮</b> › <b>Instalar app</b>.<br>Instalado, o app abre em tela cheia e seus dados ficam mais protegidos.</p>
     </div>
     <button class="btn danger block" id="wipe" style="margin-bottom:12px">Apagar todos os dados deste celular</button>
-    <p class="small muted" style="text-align:center">Ritmo · versão 1.1</p>`;
+    <p class="small muted" style="text-align:center">Ritmo · versão 1.2</p>`;
   },
   bind(view) {
     const seg = { sex: db.profile.sex, goal: db.profile.goal || 'manter' };
