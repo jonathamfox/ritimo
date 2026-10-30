@@ -40,7 +40,7 @@ const ICON = {
 // ---------- dados (guardados no aparelho) ----------
 const KEY = 'ritmo-dados-v1';
 const blank = () => ({
-  v: 1, profile: null, foods: [], logs: {}, water: {}, workouts: [], wlogs: [], weights: [], recent: [], nextId: 1
+  v: 1, profile: null, foods: [], logs: {}, water: {}, workouts: [], wlogs: [], weights: [], recent: [], metrics: [], nextId: 1
 });
 let db;
 try { db = JSON.parse(localStorage.getItem(KEY)) || blank(); } catch { db = blank(); }
@@ -52,7 +52,7 @@ const uid = () => 'u' + (db.nextId++);
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
 const BASE = (window.BASE_FOODS || []).map((f, i) => ({
-  id: 'b:' + norm(f[0]), name: f[0], portion_g: f[1], kcal: f[2], protein: f[3], carbs: f[4], fat: f[5], unit: f[6] || null, unit_g: f[7] || null, source: 'base'
+  id: 'b:' + norm(f[0]), name: f[0], portion_g: f[1], kcal: f[2], protein: f[3], carbs: f[4], fat: f[5], fiber: Number.isFinite(f[8]) ? f[8] : null, unit: f[6] || null, unit_g: f[7] || null, source: 'base'
 }));
 // unidade caseira do alimento (ex.: 1 ovo = 50 g); o usuário pode mudar em qualquer alimento
 const foodUnit = (f) => {
@@ -94,6 +94,7 @@ function targets() {
       kcal = Math.max(Math.round(tdee * f / 10) * 10, p.sex === 'M' ? 1500 : 1200);
     } else kcal = 2000;
   }
+  // Mantém as metas anteriores dos backups existentes.
   const pp = Number(p.protein_pct ?? 30), cp = Number(p.carb_pct ?? 45), fp = Number(p.fat_pct ?? 25);
   return {
     kcal, auto, tdee: tdee ? Math.round(tdee) : null,
@@ -102,8 +103,8 @@ function targets() {
   };
 }
 function dayTotals(day) {
-  const t = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
-  for (const l of db.logs[day] || []) { t.kcal += l.kcal; t.protein += l.protein; t.carbs += l.carbs; t.fat += l.fat; }
+  const t = { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, fiberKnown: 0 };
+  for (const l of db.logs[day] || []) { t.kcal += l.kcal; t.protein += l.protein; t.carbs += l.carbs; t.fat += l.fat; if (Number.isFinite(l.fiber)) { t.fiber += l.fiber; t.fiberKnown++; } }
   return t;
 }
 const trainedOn = (day) => db.wlogs.filter(w => w.day === day);
@@ -268,6 +269,9 @@ VIEWS.hoje = {
       </div>
       <div class="macros">${macroBlock('Carboidrato', tot.carbs, t.carbs, 'var(--carb)')}${macroBlock('Proteína', tot.protein, t.protein, 'var(--prot)')}${macroBlock('Gordura', tot.fat, t.fat, 'var(--fat)')}</div>
     </div>
+    <div class="card"><div class="spread"><h3 style="margin:0">Fibras</h3><span class="muted small">${num(tot.fiber,1)} / ${num(db.profile.fiber_target ?? 30)} g</span></div>
+      <div class="bar" style="margin-top:12px"><i style="width:${Math.min(100,tot.fiber/(db.profile.fiber_target ?? 30)*100)}%;background:var(--ok)"></i></div>
+      <p class="small muted">Apenas alimentos com fibras informadas entram na soma. ${tot.fiberKnown ? tot.fiberKnown + ' registro(s) com dados.' : 'Nenhum registro com dados de fibras.'} Dados ausentes não significam zero.</p></div>
     <div class="card">
       <div class="spread"><h3 style="margin:0">Água</h3><span class="muted small"><b style="color:var(--text)">${num(water / 1000, 2)} L</b> de ${num(t.water / 1000, 1)} L</span></div>
       <div class="water-cups">${Array.from({ length: Math.min(cups, 16) }, (_, i) => `<div class="cup ${i < cupsOn ? 'on' : ''}"></div>`).join('')}</div>
@@ -294,6 +298,7 @@ VIEWS.hoje = {
       if (b.dataset.water) {
         const d = state.date; db.water[d] = Math.max(0, (db.water[d] || 0) + Number(b.dataset.water)); save(); render();
       }
+      if (b.dataset.metricDel && confirm('Excluir esta atividade?')) { db.metrics = (db.metrics || []).filter(m => m.id !== b.dataset.metricDel); save(); render(); }
       if (b.dataset.start) startWorkout(b.dataset.start);
     });
   }
@@ -392,7 +397,7 @@ async function searchOnline(q, b) {
       const name = (p.product_name_pt || p.product_name || '').trim();
       if (kcal == null || !name) return null;
       return { name, brand: (p.brands || '').split(',')[0].trim() || null, barcode: p.code || null, portion_g: Number(p.serving_quantity) || 100,
-        kcal: r1(kcal), protein: r1(n.proteins_100g || 0), carbs: r1(n.carbohydrates_100g || 0), fat: r1(n.fat_100g || 0), source: 'openfoodfacts' };
+        kcal: r1(kcal), protein: r1(n.proteins_100g || 0), carbs: r1(n.carbohydrates_100g || 0), fat: r1(n.fat_100g || 0), fiber: n.fiber_100g == null ? null : r1(n.fiber_100g), source: 'openfoodfacts' };
     }).filter(Boolean).slice(0, 20);
     if (!list.length) { box.innerHTML = '<div class="empty small">Nenhum produto encontrado. Tente outro nome ou cadastre pelo rótulo.</div>'; return; }
     box.innerHTML = '<p class="muted small" style="margin:14px 2px 2px">Produtos de mercado <span class="tag">confira com o rótulo</span></p>' + list.map((f, i) => {
@@ -406,7 +411,7 @@ async function searchOnline(q, b) {
 }
 function openQty(food, meal, back) {
   if (!food) return;
-  const calc = (g) => ({ kcal: food.kcal * g / 100, protein: food.protein * g / 100, carbs: food.carbs * g / 100, fat: food.fat * g / 100 });
+  const calc = (g) => ({ kcal: food.kcal * g / 100, protein: food.protein * g / 100, carbs: food.carbs * g / 100, fat: food.fat * g / 100, fiber: Number.isFinite(food.fiber) ? food.fiber * g / 100 : null });
   const U = foodUnit(food);
   let mode = U ? 'un' : 'g';
   const g0 = food.portion_g || 100;
@@ -450,7 +455,7 @@ function openQty(food, meal, back) {
       const g = grams();
       if (g <= 0) return toast('Informe a quantidade');
       const m = calc(g), d = state.date;
-      const entry = { id: uid(), meal: $('#qtyMeal', b).value, food_id: food.id, name: food.name, grams: r1(g), kcal: r1(m.kcal), protein: r1(m.protein), carbs: r1(m.carbs), fat: r1(m.fat) };
+      const entry = { id: uid(), meal: $('#qtyMeal', b).value, food_id: food.id, name: food.name, grams: r1(g), kcal: r1(m.kcal), protein: r1(m.protein), carbs: r1(m.carbs), fat: r1(m.fat), fiber: m.fiber == null ? null : r1(m.fiber) };
       if (mode === 'un') { entry.units = val(); entry.unit = U.unit; }
       (db.logs[d] = db.logs[d] || []).push(entry);
       db.recent = [food.id, ...db.recent.filter(i => i !== food.id)].slice(0, 20);
@@ -500,6 +505,7 @@ function openNewFood(meal, pre = {}) {
       <label class="f"><span>Carb</span><input name="carbs" type="number" step="any" inputmode="decimal" value="${pre.carbs ?? ''}"></label>
       <label class="f"><span>Prot</span><input name="protein" type="number" step="any" inputmode="decimal" value="${pre.protein ?? ''}"></label>
       <label class="f"><span>Gord</span><input name="fat" type="number" step="any" inputmode="decimal" value="${pre.fat ?? ''}"></label>
+      <label class="f"><span>Fibras (opcional)</span><input name="fiber" type="number" min="0" step="any" inputmode="decimal" value="${pre.fiber ?? ''}"></label>
     </div>
     <button class="btn primary block" type="submit">${editing ? 'Salvar' : 'Salvar e adicionar'}</button>
     ${editing ? '<button class="btn danger block" type="button" id="nfDel" style="margin-top:10px">Excluir alimento</button>' : ''}
@@ -512,7 +518,7 @@ function openNewFood(meal, pre = {}) {
       const portion = n('portion_g') || 100, f = seg.base === 'porcao' ? 100 / portion : 1;
       const food = {
         id: editing ? pre.id : uid(), name: fd.name.trim(), brand: fd.brand.trim() || null, barcode: fd.barcode.trim() || null,
-        portion_g: portion, unit: (fd.unit || '').trim().toLowerCase() || null, unit_g: n('unit_g') || null, kcal: r1(n('kcal') * f), protein: r1(n('protein') * f), carbs: r1(n('carbs') * f), fat: r1(n('fat') * f), source: 'usuario'
+        portion_g: portion, unit: (fd.unit || '').trim().toLowerCase() || null, unit_g: n('unit_g') || null, kcal: r1(n('kcal') * f), protein: r1(n('protein') * f), carbs: r1(n('carbs') * f), fat: r1(n('fat') * f), fiber: fd.fiber === '' ? null : r1(n('fiber') * f), source: 'usuario'
       };
       if (!food.name) return toast('Informe o nome');
       if (db.units) delete db.units[food.id];
@@ -596,12 +602,13 @@ VIEWS.treino = {
   html() {
     const hist = [...db.wlogs].sort((a, b) => (a.day + a.id) < (b.day + b.id) ? 1 : -1).slice(0, 12);
     const last = (id) => { const l = db.wlogs.filter(w => w.workout_id === id).sort((a, b) => a.day < b.day ? 1 : -1)[0]; return l ? dayLabel(l.day) : 'nunca'; };
-    const wk = (() => { const s = addDays(today(), -parseDay(today()).getDay()); return new Set(db.wlogs.filter(w => w.day >= s).map(w => w.day)).size; })();
+    const allSessions = [...db.wlogs.map(w=>({...w,kind:'wlog'})),...(db.metrics||[]).map(w=>({...w,kind:'metric'}))];
+    const wk = (() => { const start = addDays(today(), -parseDay(today()).getDay()); return new Set(allSessions.filter(w => w.day >= start).map(w => w.day)).size; })();
     return `<div class="spread"><h2>Treinos</h2><button class="btn sm primary" id="newWk">+ Nova ficha</button></div>
     <div class="stats3" style="margin-bottom:12px">
       <div class="stat"><span>Nesta semana</span><b>${wk} ${wk === 1 ? 'dia' : 'dias'}</b></div>
-      <div class="stat"><span>Últimos 30 dias</span><b>${new Set(db.wlogs.filter(w => w.day > addDays(today(), -30)).map(w => w.day)).size}</b></div>
-      <div class="stat"><span>Total</span><b>${db.wlogs.length}</b></div>
+      <div class="stat"><span>Últimos 30 dias</span><b>${new Set(allSessions.filter(w => w.day > addDays(today(), -30)).map(w => w.day)).size}</b></div>
+      <div class="stat"><span>Total</span><b>${allSessions.length}</b></div>
     </div>
     ${db.workouts.length ? db.workouts.map((w, i) => `<div class="card">
       <div class="wk-head"><div class="wk-badge">${esc((shortName(w.name).match(/\b([A-Z])\b/) || [, String.fromCharCode(65 + i)])[1])}</div>
@@ -610,19 +617,51 @@ VIEWS.treino = {
       <div style="margin-top:10px">${w.exercises.slice(0, 6).map(e => `<div class="small muted" style="padding:2px 0">• ${esc(e.name)} — ${e.sets}×${esc(e.reps)}${e.load_kg ? ' · ' + num(e.load_kg, 1) + ' kg' : ''}</div>`).join('')}</div>
       <button class="btn primary block" style="margin-top:12px" data-start="${w.id}">Começar treino</button></div>`).join('')
       : '<div class="card empty">Nenhuma ficha ainda. Toque em “Nova ficha”.</div>'}
-    <div class="section-title"><h3>Histórico</h3></div>
-    <div class="card">${hist.length ? hist.map(h => `<div class="item"><div class="t"><b>${esc(h.name)}</b><span>${dayLabel(h.day)}</span></div><button class="x" data-undo="${h.id}" aria-label="Remover">×</button></div>`).join('') : '<div class="empty">Seus treinos concluídos aparecem aqui.</div>'}</div>`;
+    <div class="card"><h3>Métricas de treino</h3><p class="small muted">Registre corrida, caminhada, ciclismo, musculação ou outras atividades, com duração, frequência cardíaca, distância e calorias ativas.</p>
+      <button class="btn primary block" id="metricAdd">+ Registrar atividade</button>
+      <div id="metricHistory">${(db.metrics || []).slice().sort((a,b)=>b.day.localeCompare(a.day)).slice(0,15).map(m=>`<div class="item"><div class="t"><b>${esc(m.type)}</b><span>${esc(m.day)} · ${num(m.minutes,0)} min${m.distance_km != null ? ' · '+num(m.distance_km,2)+' km':''}${m.hr_avg != null ? ' · '+num(m.hr_avg,0)+' bpm':''}${m.active_kcal != null ? ' · '+num(m.active_kcal,0)+' kcal ativas':''} · ${esc(m.source || 'manual')}</span></div><button class="x" data-metric-del="${esc(m.id)}" aria-label="Remover">×</button></div>`).join('') || '<div class="empty small">Nenhuma atividade registrada.</div>'}</div>
+    </div>
+    <div class="section-title"><h3>Histórico unificado</h3></div>
+    <div class="card">${allSessions.slice().sort((a,b)=>b.day.localeCompare(a.day)).slice(0,30).map(h=>`<div class="item"><div class="t"><b>${esc(h.name||h.type)}</b><span>${esc(h.day)} · ${h.kind==='metric' ? [h.minutes!=null?num(h.minutes,0)+' min':null,h.hr_avg!=null?'FC média '+num(h.hr_avg)+' bpm':null,h.hr_max!=null?'máx '+num(h.hr_max)+' bpm':null,h.active_kcal!=null?num(h.active_kcal)+' kcal':null].filter(Boolean).join(' · ') : 'Ficha concluída'} · ${esc(h.source||'Ritmo')}</span></div></div>`).join('') || '<div class="empty">Seus treinos aparecem aqui.</div>'}</div>`;
   },
   bind(view) {
     $('#newWk', view).addEventListener('click', () => openWorkoutEditor(null));
+    $('#metricAdd', view).addEventListener('click', openMetricForm);
     view.addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.metricDel && confirm('Excluir esta atividade?')) { db.metrics = (db.metrics || []).filter(m => m.id !== b.dataset.metricDel); save(); render(); }
       if (b.dataset.start) startWorkout(b.dataset.start);
       if (b.dataset.edit) openWorkoutEditor(b.dataset.edit);
       if (b.dataset.undo && confirm('Remover este treino do histórico?')) { db.wlogs = db.wlogs.filter(w => w.id !== b.dataset.undo); save(); render(); }
     });
   }
 };
+
+
+function openMetricForm() {
+  openSheet('Registrar métricas', `
+    <form id="metricForm">
+      <label class="f"><span>Modalidade</span><select name="type"><option>Musculação</option><option>Corrida</option><option>Caminhada</option><option>Ciclismo</option><option>CrossFit</option><option>Natação</option><option>Outro</option></select></label>
+      <label class="f"><span>Data</span><input name="day" type="date" required value="${today()}" max="${today()}"></label>
+      <div class="grid2">
+        <label class="f"><span>Duração (min)</span><input name="minutes" type="number" min="1" max="1440" step="1" required></label>
+        <label class="f"><span>Distância (km)</span><input name="distance_km" type="number" min="0" step="0.01" inputmode="decimal"></label>
+        <label class="f"><span>FC média (bpm)</span><input name="hr_avg" type="number" min="30" max="250"></label>
+        <label class="f"><span>FC máxima (bpm)</span><input name="hr_max" type="number" min="30" max="250"></label>
+        <label class="f"><span>Calorias ativas (kcal)</span><input name="active_kcal" type="number" min="0" max="10000"></label>
+        <label class="f"><span>Esforço percebido (1–10)</span><input name="effort" type="number" min="1" max="10"></label>
+      </div>
+      <label class="f"><span>Observações</span><input name="notes" maxlength="300"></label>
+      <button class="btn primary block" type="submit">Salvar atividade</button>
+    </form>`, b => $('#metricForm',b).addEventListener('submit',e=>{
+      e.preventDefault(); const f=new FormData(e.target);
+      const opt=k=>f.get(k)===''?null:Number(f.get(k));
+      const m={id:uid(),type:f.get('type'),day:f.get('day'),minutes:Number(f.get('minutes')),distance_km:opt('distance_km'),hr_avg:opt('hr_avg'),hr_max:opt('hr_max'),active_kcal:opt('active_kcal'),effort:opt('effort'),notes:String(f.get('notes')||''),source:'manual'};
+      if(!m.day || m.minutes<1 || m.minutes>1440 || [m.distance_km,m.hr_avg,m.hr_max,m.active_kcal,m.effort].some(v=>v!==null && !Number.isFinite(v)))return toast('Confira os valores');
+      (db.metrics=db.metrics||[]).push(m);save();closeSheet();render();toast('Atividade salva ✓');
+    }));
+}
+
 
 let restT = null;
 function stopRest() { clearInterval(restT); restT = null; $('#restTimer')?.remove(); }
@@ -805,6 +844,9 @@ VIEWS.perfil = {
         <label class="f"><span>Prot %</span><input name="protein_pct" type="number" inputmode="numeric" value="${p.protein_pct ?? 30}"></label>
         <label class="f"><span>Gord %</span><input name="fat_pct" type="number" inputmode="numeric" value="${p.fat_pct ?? 25}"></label>
       </div>
+      <p class="small muted">Os três percentuais devem somar 100%. Metas são referências ajustáveis, não limites clínicos.</p>
+      <label class="f"><span>Meta de fibras (g/dia)</span><input name="fiber_target" type="number" min="10" max="70" step="1" inputmode="numeric" value="${esc(p.fiber_target ?? 30)}"></label>
+      <p class="small muted">O acompanhamento de fibras estará disponível para alimentos com dados de fibras cadastrados.</p>
       <label class="f"><span>Meta de água (ml) — vazio = automático</span><input name="water_target" type="number" inputmode="numeric" value="${esc(p.water_target || '')}"></label>
       <button class="btn primary block" type="submit">Salvar</button>
     </form>
@@ -816,7 +858,7 @@ VIEWS.perfil = {
       <p class="small muted" style="margin:0">iPhone: no Safari, toque em <b>Compartilhar</b> › <b>Adicionar à Tela de Início</b>.<br>Android: no Chrome, menu <b>⋮</b> › <b>Instalar app</b>.<br>Instalado, o app abre em tela cheia e seus dados ficam mais protegidos.</p>
     </div>
     <button class="btn danger block" id="wipe" style="margin-bottom:12px">Apagar todos os dados deste celular</button>
-    <p class="small muted" style="text-align:center">Ritmo · versão 1.3</p>`;
+    <p class="small muted" style="text-align:center">Ritmo · versão 2.0</p>`;
   },
   bind(view) {
     const seg = { sex: db.profile.sex, goal: db.profile.goal || 'manter' };
@@ -826,9 +868,11 @@ VIEWS.perfil = {
       const p = readProfileForm(e.target, seg); delete p.weight;
       const fd = Object.fromEntries(new FormData(e.target));
       const c = Number(fd.carb_pct) || 0, pr = Number(fd.protein_pct) || 0, f = Number(fd.fat_pct) || 0;
-      if (c + pr + f !== 100) return toast(`Os macros somam ${c + pr + f}% — precisam somar 100%`);
+      if (![c, pr, f].every(Number.isFinite) || [c, pr, f].some(x => x < 0 || x > 100) || Math.abs(c + pr + f - 100) > 0.01) return toast('Macros inválidos: devem somar 100%');
+      const fiberTarget = Number(fd.fiber_target);
+      if (!Number.isFinite(fiberTarget) || fiberTarget < 10 || fiberTarget > 70) return toast('Meta de fibras deve ficar entre 10 e 70 g');
       if (!p.name) return toast('Informe seu nome');
-      db.profile = { ...db.profile, ...p, kcal_target: Number(fd.kcal_target) || null, carb_pct: c, protein_pct: pr, fat_pct: f, water_target: Number(fd.water_target) || null };
+      db.profile = { ...db.profile, ...p, kcal_target: Number(fd.kcal_target) || null, carb_pct: c, protein_pct: pr, fat_pct: f, fiber_target: fiberTarget, water_target: Number(fd.water_target) || null };
       save(); render(); toast('Perfil salvo ✓');
     });
     $('#exp', view).addEventListener('click', exportBackup);
@@ -868,5 +912,5 @@ function importBackup() {
 // ---------- início ----------
 const t0 = location.hash.slice(1); if (VIEWS[t0]) state.tab = t0;
 render();
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator && location.protocol === 'https:') Promise.resolve().catch(() => {});
 })();
