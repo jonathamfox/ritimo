@@ -35,7 +35,14 @@
   <div id="sheetRoot"></div>
   <div id="toast"></div>
   <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
-  <script src="foods.js"></script>
-  <script src="app.js"></script>
+  <script>
+  window.addEventListener('error', function(e) {
+    if (document.querySelector('#view') && !document.querySelector('#view').children.length) {
+      document.querySelector('#view').innerHTML = '<div style="padding:24px;color:#ffb39c">Erro ao iniciar o Ritmo: ' + String(e.message || 'desconhecido').replace(/[&<>]/g,'') + '. Atualize a página.</div>';
+    }
+  });
+</script>
+<script src="foods.js?v=20261030c"></script>
+  <script src="app.js?v=20261030c"></script>
 </body>
 </html>
