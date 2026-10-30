@@ -107,7 +107,7 @@ function dayTotals(day) {
   for (const l of db.logs[day] || []) { t.kcal += l.kcal; t.protein += l.protein; t.carbs += l.carbs; t.fat += l.fat; if (Number.isFinite(l.fiber)) { t.fiber += l.fiber; t.fiberKnown++; } }
   return t;
 }
-const trainedOn = (day) => db.wlogs.filter(w => w.day === day);
+const trainedOn = (day) => db.wlogs.filter(w => w.day === day).concat((db.metrics || []).filter(m => m.day === day));
 
 // ---------- interface geral ----------
 const state = { tab: 'hoje', date: today(), session: null };
@@ -279,7 +279,7 @@ VIEWS.hoje = {
     </div>
     <div class="card">
       <div class="spread"><h3 style="margin:0">Treino</h3>${done.length ? '<span class="pill" style="color:var(--ok)">✓ Feito</span>' : ''}</div>
-      ${done.length ? done.map(x => `<p class="muted" style="margin:8px 0 0">${esc(x.name)}</p>`).join('') :
+      ${done.length ? done.map(x => `<p class="muted" style="margin:8px 0 0">${esc(x.name || x.type)}${x.minutes ? ' · ' + num(x.minutes) + ' min' : ''}</p>`).join('') :
         db.workouts.length ? `<p class="muted small" style="margin:6px 0 10px">Qual treino hoje?</p><div class="row wrap">${db.workouts.map(x => `<button class="btn sm" data-start="${x.id}">${esc(shortName(x.name))}</button>`).join('')}</div>`
           : `<p class="muted small">Monte sua primeira ficha na aba Treino.</p>`}
     </div>
@@ -316,7 +316,7 @@ VIEWS.dieta = {
     ${MEALS.map(([k, name]) => {
       const items = logs.filter(l => l.meal === k), sum = items.reduce((a, l) => a + l.kcal, 0);
       return `<div class="card"><div class="meal-h"><h3>${name}</h3><span class="muted small">${num(sum)} kcal</span></div>
-        ${items.length ? `<div style="margin-top:6px">${items.map(l => `<div class="item"><div class="t"><b>${esc(l.name)}</b><span>${l.units ? fmtUnits(l.units, l.unit) + ' (' + num(l.grams) + ' g)' : num(l.grams) + ' g'} · C ${num(l.carbs)} · P ${num(l.protein)} · G ${num(l.fat)}</span></div><span class="k">${num(l.kcal)}</span><button class="x" data-del="${l.id}" aria-label="Remover">×</button></div>`).join('')}</div>` : ''}
+        ${items.length ? `<div style="margin-top:6px">${items.map(l => `<div class="item"><div class="t"><b>${esc(l.name)}</b><span>${l.units ? fmtUnits(l.units, l.unit) + ' (' + num(l.grams) + ' g)' : num(l.grams) + ' g'} · C ${num(l.carbs)} · P ${num(l.protein)} · G ${num(l.fat)}${Number.isFinite(l.fiber) ? ' · F ' + num(l.fiber, 1) : ''}</span></div><span class="k">${num(l.kcal)}</span><button class="x" data-del="${l.id}" aria-label="Remover">×</button></div>`).join('')}</div>` : ''}
         <button class="add-row" data-add="${k}">+ Adicionar alimento</button></div>`;
     }).join('')}`;
   },
@@ -443,7 +443,7 @@ function openQty(food, meal, back) {
     };
     const prev = () => {
       const g = grams(), m = calc(g);
-      $('#qtyPrev', b).innerHTML = `<div class="spread"><b style="font-size:22px">${num(m.kcal)} kcal</b><span class="small"><span style="color:var(--carb)">C ${num(m.carbs, 1)}</span> · <span style="color:var(--prot)">P ${num(m.protein, 1)}</span> · <span style="color:var(--fat)">G ${num(m.fat, 1)}</span></span></div>
+      $('#qtyPrev', b).innerHTML = `<div class="spread"><b style="font-size:22px">${num(m.kcal)} kcal</b><span class="small"><span style="color:var(--carb)">C ${num(m.carbs, 1)}</span> · <span style="color:var(--prot)">P ${num(m.protein, 1)}</span> · <span style="color:var(--fat)">G ${num(m.fat, 1)}</span>${m.fiber != null ? ` · <span style="color:var(--ok)">F ${num(m.fiber, 1)}</span>` : ''}</span></div>
         ${mode === 'un' ? `<div class="small muted" style="margin-top:6px">${fmtUnits(val(), U.unit)} = ${num(g)} g</div>` : ''}`;
     };
     $('#qtyG', b).addEventListener('input', prev);
@@ -505,8 +505,9 @@ function openNewFood(meal, pre = {}) {
       <label class="f"><span>Carb</span><input name="carbs" type="number" step="any" inputmode="decimal" value="${pre.carbs ?? ''}"></label>
       <label class="f"><span>Prot</span><input name="protein" type="number" step="any" inputmode="decimal" value="${pre.protein ?? ''}"></label>
       <label class="f"><span>Gord</span><input name="fat" type="number" step="any" inputmode="decimal" value="${pre.fat ?? ''}"></label>
-      <label class="f"><span>Fibras (opcional)</span><input name="fiber" type="number" min="0" step="any" inputmode="decimal" value="${pre.fiber ?? ''}"></label>
+
     </div>
+    <div class="grid2"><label class="f"><span>Fibras g (opcional)</span><input name="fiber" type="number" min="0" step="any" inputmode="decimal" value="${pre.fiber ?? ''}"></label><div></div></div>
     <button class="btn primary block" type="submit">${editing ? 'Salvar' : 'Salvar e adicionar'}</button>
     ${editing ? '<button class="btn danger block" type="button" id="nfDel" style="margin-top:10px">Excluir alimento</button>' : ''}
     </form>`, (b) => {
@@ -618,15 +619,16 @@ VIEWS.treino = {
       <button class="btn primary block" style="margin-top:12px" data-start="${w.id}">Começar treino</button></div>`).join('')
       : '<div class="card empty">Nenhuma ficha ainda. Toque em “Nova ficha”.</div>'}
     <div class="card"><h3>Métricas de treino</h3><p class="small muted">Registre corrida, caminhada, ciclismo, musculação ou outras atividades, com duração, frequência cardíaca, distância e calorias ativas.</p>
-      <button class="btn primary block" id="metricAdd">+ Registrar atividade</button>
-      <div id="metricHistory">${(db.metrics || []).slice().sort((a,b)=>b.day.localeCompare(a.day)).slice(0,15).map(m=>`<div class="item"><div class="t"><b>${esc(m.type)}</b><span>${esc(m.day)} · ${num(m.minutes,0)} min${m.distance_km != null ? ' · '+num(m.distance_km,2)+' km':''}${m.hr_avg != null ? ' · '+num(m.hr_avg,0)+' bpm':''}${m.active_kcal != null ? ' · '+num(m.active_kcal,0)+' kcal ativas':''} · ${esc(m.source || 'manual')}</span></div><button class="x" data-metric-del="${esc(m.id)}" aria-label="Remover">×</button></div>`).join('') || '<div class="empty small">Nenhuma atividade registrada.</div>'}</div>
+      <div class="row"><button class="btn primary grow" id="metricAdd">+ Registrar atividade</button><button class="btn grow" id="healthImp">⌚ Importar do Saúde</button></div>
+      <div id="metricHistory">${(db.metrics || []).slice().sort((a,b)=>b.day.localeCompare(a.day)).slice(0,15).map(m=>`<div class="item"><div class="t"><b>${esc(m.type)}</b><span>${dayLabel(m.day)} · ${num(m.minutes,0)} min${m.distance_km != null ? ' · '+num(m.distance_km,2)+' km':''}${m.hr_avg != null ? ' · '+num(m.hr_avg,0)+' bpm':''}${m.active_kcal != null ? ' · '+num(m.active_kcal,0)+' kcal ativas':''}${m.steps != null ? ' · '+num(m.steps,0)+' passos':''} · ${esc(m.source || 'manual')}</span></div><button class="x" data-metric-del="${esc(m.id)}" aria-label="Remover">×</button></div>`).join('') || '<div class="empty small">Nenhuma atividade registrada.</div>'}</div>
     </div>
     <div class="section-title"><h3>Histórico unificado</h3></div>
-    <div class="card">${allSessions.slice().sort((a,b)=>b.day.localeCompare(a.day)).slice(0,30).map(h=>`<div class="item"><div class="t"><b>${esc(h.name||h.type)}</b><span>${esc(h.day)} · ${h.kind==='metric' ? [h.minutes!=null?num(h.minutes,0)+' min':null,h.hr_avg!=null?'FC média '+num(h.hr_avg)+' bpm':null,h.hr_max!=null?'máx '+num(h.hr_max)+' bpm':null,h.active_kcal!=null?num(h.active_kcal)+' kcal':null].filter(Boolean).join(' · ') : 'Ficha concluída'} · ${esc(h.source||'Ritmo')}</span></div></div>`).join('') || '<div class="empty">Seus treinos aparecem aqui.</div>'}</div>`;
+    <div class="card">${allSessions.slice().sort((a,b)=>b.day.localeCompare(a.day)).slice(0,30).map(h=>`<div class="item"><div class="t"><b>${esc(h.name||h.type)}</b><span>${dayLabel(h.day)} · ${h.kind==='metric' ? [h.minutes!=null?num(h.minutes,0)+' min':null,h.hr_avg!=null?'FC média '+num(h.hr_avg)+' bpm':null,h.hr_max!=null?'máx '+num(h.hr_max)+' bpm':null,h.active_kcal!=null?num(h.active_kcal)+' kcal':null,h.steps!=null?num(h.steps)+' passos':null].filter(Boolean).join(' · ') : 'Ficha concluída'} · ${esc(h.source||'Ritmo')}</span></div><button class="x" ${h.kind==='metric' ? `data-metric-del="${esc(h.id)}"` : `data-undo="${esc(h.id)}"`} aria-label="Remover">×</button></div>`).join('') || '<div class="empty">Seus treinos aparecem aqui.</div>'}</div>`;
   },
   bind(view) {
     $('#newWk', view).addEventListener('click', () => openWorkoutEditor(null));
     $('#metricAdd', view).addEventListener('click', openMetricForm);
+    $('#healthImp', view).addEventListener('click', () => openHealthImport(''));
     view.addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.metricDel && confirm('Excluir esta atividade?')) { db.metrics = (db.metrics || []).filter(m => m.id !== b.dataset.metricDel); save(); render(); }
@@ -638,6 +640,72 @@ VIEWS.treino = {
 };
 
 
+// ---------- importação do app Saúde (via Atalho do iPhone) ----------
+// O Atalho copia um texto assim:  RITMO-SAUDE;data=2026-10-30;kcal=520;passos=8123;km=5,2;fc=98;fcmax=152;min=45
+const HEALTH_KEYS = { kcal: 'active_kcal', passos: 'steps', km: 'distance_km', fc: 'hr_avg', fcmax: 'hr_max', min: 'minutes' };
+function parseHealth(txt) {
+  txt = String(txt || '');
+  if (!/RITMO-SAUDE/i.test(txt)) return null;
+  const out = { day: today() };
+  for (const part of txt.split(/[;\n&?]+/)) {
+    const m = part.match(/^\s*([a-zç]+)\s*=\s*(.*)$/i); if (!m) continue;
+    const k = m[1].toLowerCase(), v = m[2].trim();
+    if (k === 'data') {
+      let d = v.match(/(\d{4})-(\d{1,2})-(\d{1,2})/), b = v.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (d) out.day = d[1] + '-' + pad(d[2]) + '-' + pad(d[3]); else if (b) out.day = b[3] + '-' + pad(b[2]) + '-' + pad(b[1]);
+      continue;
+    }
+    if (!HEALTH_KEYS[k]) continue;
+    const n = v.replace(/\s/g, '').match(/-?\d[\d.,]*/); if (!n) continue;
+    let t = n[0];
+    if (/,\d+$/.test(t)) t = t.replace(/\./g, '').replace(',', '.');      // 1.234,5
+    else if (/\.\d{3}$/.test(t) && k === 'passos') t = t.replace(/\./g, ''); // 8.123 passos
+    else t = t.replace(/,/g, '');
+    const x = Number(t); if (Number.isFinite(x) && x >= 0) out[HEALTH_KEYS[k]] = x;
+  }
+  if (out.distance_km != null && out.distance_km > 200) out.distance_km = out.distance_km / 1000; // veio em metros
+  return out;
+}
+function openHealthImport(prefill) {
+  const show = (data) => {
+    const box = $('#hiPrev'); if (!box) return;
+    if (!data) { box.innerHTML = ''; return; }
+    const row = (l, v) => v == null ? '' : `<div class="item"><div class="t"><b>${l}</b></div><span class="k">${v}</span></div>`;
+    box.innerHTML = `<div class="card"><h3>${dayLabel(data.day)}</h3>
+      ${row('Calorias ativas', data.active_kcal != null ? num(data.active_kcal) + ' kcal' : null)}${row('Passos', data.steps != null ? num(data.steps) : null)}
+      ${row('Distância', data.distance_km != null ? num(data.distance_km, 2) + ' km' : null)}${row('Minutos de exercício', data.minutes != null ? num(data.minutes) + ' min' : null)}
+      ${row('FC média', data.hr_avg != null ? num(data.hr_avg) + ' bpm' : null)}${row('FC máxima', data.hr_max != null ? num(data.hr_max) + ' bpm' : null)}</div>
+      <button class="btn ok block" id="hiSave">Salvar no histórico</button>`;
+    $('#hiSave').onclick = () => {
+      const old = (db.metrics || []).find(m => m.source === 'Apple Saúde' && m.day === data.day);
+      const m = { id: old ? old.id : uid(), type: 'Atividade do dia (Apple Watch)', day: data.day, minutes: data.minutes ?? null, distance_km: data.distance_km ?? null,
+        hr_avg: data.hr_avg ?? null, hr_max: data.hr_max ?? null, active_kcal: data.active_kcal ?? null, steps: data.steps ?? null, effort: null, notes: '', source: 'Apple Saúde' };
+      db.metrics = (db.metrics || []).filter(x => x !== old); db.metrics.push(m);
+      save(); closeSheet(); state.tab = 'treino'; render(); toast(old ? 'Dia atualizado ✓' : 'Dados do Saúde salvos ✓');
+    };
+  };
+  openSheet('Importar do Saúde', `
+    <p class="small muted" style="margin-top:-4px">Rode o atalho <b>Ritmo Saúde</b> no iPhone. Ele copia os dados do dia; depois volte aqui e toque em colar.</p>
+    <button class="btn primary block" id="hiPaste">📋 Colar dados do atalho</button>
+    <label class="f" style="margin-top:12px"><span>Ou cole aqui (segure o dedo › Colar)</span><input id="hiText" placeholder="RITMO-SAUDE;data=…" value="${esc(prefill)}"></label>
+    <div id="hiPrev"></div>
+    <details style="margin-top:14px"><summary class="small" style="font-weight:700;color:var(--accent)">Como montar o atalho</summary>
+      <ol class="small muted" style="padding-left:18px;line-height:1.5">
+        <li>App <b>Atalhos</b> › <b>+</b> › nome: <b>Ritmo Saúde</b>.</li>
+        <li><b>Buscar Amostras de Saúde</b>: tipo <b>Energia Ativa</b>, Data de Início <b>é hoje</b>. Depois <b>Calcular Estatísticas</b> › <b>Soma</b>. Depois <b>Definir Variável</b> “kcal”.</li>
+        <li>Repita para <b>Passos</b> (Soma, “passos”), <b>Distância de Caminhada + Corrida</b> (Soma, “km”), <b>Minutos de Exercício</b> (Soma, “min”), <b>Frequência Cardíaca</b> (Média, “fc”) e de novo Frequência Cardíaca (Máximo, “fcmax”).</li>
+        <li>Ação <b>Texto</b>: <code>RITMO-SAUDE;data=</code>[Data Atual] (toque nela › Formato › <b>Curto</b>);<code>kcal=</code>[kcal];<code>passos=</code>[passos];<code>km=</code>[km];<code>min=</code>[min];<code>fc=</code>[fc];<code>fcmax=</code>[fcmax]</li>
+        <li><b>Copiar para Área de Transferência</b> e <b>Mostrar Notificação</b> “Dados copiados — abra o Ritmo”.</li>
+      </ol></details>`, (b) => {
+    const tryParse = (t) => { const d = parseHealth(t); show(d); if (!d && t) toast('Texto não reconhecido — confira o atalho'); return d; };
+    $('#hiText', b).addEventListener('input', (e) => tryParse(e.target.value));
+    $('#hiPaste', b).addEventListener('click', async () => {
+      try { const t = await navigator.clipboard.readText(); $('#hiText', b).value = t; tryParse(t); }
+      catch { toast('Não consegui colar sozinho — cole no campo abaixo'); $('#hiText', b).focus(); }
+    });
+    if (prefill) tryParse(prefill);
+  });
+}
 function openMetricForm() {
   openSheet('Registrar métricas', `
     <form id="metricForm">
@@ -858,7 +926,7 @@ VIEWS.perfil = {
       <p class="small muted" style="margin:0">iPhone: no Safari, toque em <b>Compartilhar</b> › <b>Adicionar à Tela de Início</b>.<br>Android: no Chrome, menu <b>⋮</b> › <b>Instalar app</b>.<br>Instalado, o app abre em tela cheia e seus dados ficam mais protegidos.</p>
     </div>
     <button class="btn danger block" id="wipe" style="margin-bottom:12px">Apagar todos os dados deste celular</button>
-    <p class="small muted" style="text-align:center">Ritmo · versão 2.0</p>`;
+    <p class="small muted" style="text-align:center">Ritmo · versão 2.2</p>`;
   },
   bind(view) {
     const seg = { sex: db.profile.sex, goal: db.profile.goal || 'manter' };
@@ -910,7 +978,11 @@ function importBackup() {
 }
 
 // ---------- início ----------
+try {
+  const q = new URLSearchParams(location.search).get('saude');
+  if (q && db.profile) { history.replaceState(null, '', location.pathname + location.hash); setTimeout(() => openHealthImport(q.includes('RITMO') ? q : 'RITMO-SAUDE;' + q), 300); }
+} catch { }
 const t0 = location.hash.slice(1); if (VIEWS[t0]) state.tab = t0;
 render();
-if ('serviceWorker' in navigator && location.protocol === 'https:') Promise.resolve().catch(() => {});
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
