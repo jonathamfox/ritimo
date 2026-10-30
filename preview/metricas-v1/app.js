@@ -665,7 +665,7 @@ function openMetricForm() {
 
 function importHealthWorkouts() {
   if (!window.fflate?.Unzip) return alert('Biblioteca de ZIP não carregada. Verifique sua conexão e tente novamente.');
-  openSheet('Importar Apple Saúde', \`
+  openSheet('Importar Apple Saúde', `
     <p class="small muted">Selecione o ZIP original exportado pelo aplicativo Saúde. O Ritmo lê os treinos aos poucos, sem carregar o XML completo na memória e sem enviar o arquivo a servidores.</p>
     <label class="f"><span>Período a importar</span><select id="healthPeriod">
       <option value="7">Últimos 7 dias</option><option value="15">Últimos 15 dias</option>
@@ -675,7 +675,7 @@ function importHealthWorkouts() {
     <label class="f"><span>Arquivo ZIP ou XML</span><input type="file" id="healthFile" accept=".zip,.xml,application/zip,application/xml,text/xml"></label>
     <button class="btn primary block" id="healthStart">Analisar arquivo</button>
     <p class="small muted" id="healthStatus" aria-live="polite"></p>
-    <div id="healthResults"></div>\`, b => {
+    <div id="healthResults"></div>`, b => {
     let running=false;
     $('#healthStart',b).addEventListener('click',async()=>{
       if(running)return;
