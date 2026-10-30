@@ -94,6 +94,7 @@ function targets() {
       kcal = Math.max(Math.round(tdee * f / 10) * 10, p.sex === 'M' ? 1500 : 1200);
     } else kcal = 2000;
   }
+  // Mantém as metas anteriores dos backups existentes.
   const pp = Number(p.protein_pct ?? 30), cp = Number(p.carb_pct ?? 45), fp = Number(p.fat_pct ?? 25);
   return {
     kcal, auto, tdee: tdee ? Math.round(tdee) : null,
@@ -805,6 +806,9 @@ VIEWS.perfil = {
         <label class="f"><span>Prot %</span><input name="protein_pct" type="number" inputmode="numeric" value="${p.protein_pct ?? 30}"></label>
         <label class="f"><span>Gord %</span><input name="fat_pct" type="number" inputmode="numeric" value="${p.fat_pct ?? 25}"></label>
       </div>
+      <p class="small muted">Os três percentuais devem somar 100%. Metas são referências ajustáveis, não limites clínicos.</p>
+      <label class="f"><span>Meta de fibras (g/dia)</span><input name="fiber_target" type="number" min="10" max="70" step="1" inputmode="numeric" value="${esc(p.fiber_target ?? 30)}"></label>
+      <p class="small muted">O acompanhamento de fibras estará disponível para alimentos com dados de fibras cadastrados.</p>
       <label class="f"><span>Meta de água (ml) — vazio = automático</span><input name="water_target" type="number" inputmode="numeric" value="${esc(p.water_target || '')}"></label>
       <button class="btn primary block" type="submit">Salvar</button>
     </form>
@@ -826,9 +830,11 @@ VIEWS.perfil = {
       const p = readProfileForm(e.target, seg); delete p.weight;
       const fd = Object.fromEntries(new FormData(e.target));
       const c = Number(fd.carb_pct) || 0, pr = Number(fd.protein_pct) || 0, f = Number(fd.fat_pct) || 0;
-      if (c + pr + f !== 100) return toast(`Os macros somam ${c + pr + f}% — precisam somar 100%`);
+      if (![c, pr, f].every(Number.isFinite) || [c, pr, f].some(x => x < 0 || x > 100) || Math.abs(c + pr + f - 100) > 0.01) return toast('Macros inválidos: devem somar 100%');
+      const fiberTarget = Number(fd.fiber_target);
+      if (!Number.isFinite(fiberTarget) || fiberTarget < 10 || fiberTarget > 70) return toast('Meta de fibras deve ficar entre 10 e 70 g');
       if (!p.name) return toast('Informe seu nome');
-      db.profile = { ...db.profile, ...p, kcal_target: Number(fd.kcal_target) || null, carb_pct: c, protein_pct: pr, fat_pct: f, water_target: Number(fd.water_target) || null };
+      db.profile = { ...db.profile, ...p, kcal_target: Number(fd.kcal_target) || null, carb_pct: c, protein_pct: pr, fat_pct: f, fiber_target: fiberTarget, water_target: Number(fd.water_target) || null };
       save(); render(); toast('Perfil salvo ✓');
     });
     $('#exp', view).addEventListener('click', exportBackup);
