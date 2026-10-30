@@ -52,8 +52,22 @@ const uid = () => 'u' + (db.nextId++);
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
 const BASE = (window.BASE_FOODS || []).map((f, i) => ({
-  id: 'b' + i, name: f[0], portion_g: f[1], kcal: f[2], protein: f[3], carbs: f[4], fat: f[5], source: 'base'
+  id: 'b' + i, name: f[0], portion_g: f[1], kcal: f[2], protein: f[3], carbs: f[4], fat: f[5], unit: f[6] || null, unit_g: f[7] || null, source: 'base'
 }));
+// unidade caseira do alimento (ex.: 1 ovo = 50 g); o usuário pode mudar em qualquer alimento
+const foodUnit = (f) => {
+  const o = db.units && db.units[f.id];
+  if (o) return o.unit && o.unit_g ? o : null;
+  return f.unit && f.unit_g ? { unit: f.unit, unit_g: f.unit_g } : null;
+};
+const plural = (u, n) => {
+  if (n <= 1) return u;
+  const w = u.split(' '), first = w[0];
+  w[0] = /r$/.test(first) ? first + 'es' : /l$/.test(first) ? first.slice(0, -1) + 'is' : /ão$/.test(first) ? first.slice(0, -2) + 'ões' : /[aeiouáéíóú]$/.test(first) ? first + 's' : first + 's';
+  if (w[1] && !['de', 'da', 'do'].includes(w[1])) w[1] = w[1] + 's';
+  return w.join(' ');
+};
+const fmtUnits = (n, u) => num(n, n % 1 ? 1 : 0).replace(',5', ' ½').replace(/^0 ½$/, '½') + ' ' + plural(u, n);
 const allFoods = () => db.foods.concat(BASE);
 const foodById = (id) => allFoods().find(f => f.id === id);
 
@@ -295,7 +309,7 @@ VIEWS.dieta = {
     ${MEALS.map(([k, name]) => {
       const items = logs.filter(l => l.meal === k), sum = items.reduce((a, l) => a + l.kcal, 0);
       return `<div class="card"><div class="meal-h"><h3>${name}</h3><span class="muted small">${num(sum)} kcal</span></div>
-        ${items.length ? `<div style="margin-top:6px">${items.map(l => `<div class="item"><div class="t"><b>${esc(l.name)}</b><span>${num(l.grams)} g · C ${num(l.carbs)} · P ${num(l.protein)} · G ${num(l.fat)}</span></div><span class="k">${num(l.kcal)}</span><button class="x" data-del="${l.id}" aria-label="Remover">×</button></div>`).join('')}</div>` : ''}
+        ${items.length ? `<div style="margin-top:6px">${items.map(l => `<div class="item"><div class="t"><b>${esc(l.name)}</b><span>${l.units ? fmtUnits(l.units, l.unit) + ' (' + num(l.grams) + ' g)' : num(l.grams) + ' g'} · C ${num(l.carbs)} · P ${num(l.protein)} · G ${num(l.fat)}</span></div><span class="k">${num(l.kcal)}</span><button class="x" data-del="${l.id}" aria-label="Remover">×</button></div>`).join('')}</div>` : ''}
         <button class="add-row" data-add="${k}">+ Adicionar alimento</button></div>`;
     }).join('')}`;
   },
@@ -355,31 +369,80 @@ function openAddFood(meal) {
 function openQty(food, meal, back) {
   if (!food) return;
   const calc = (g) => ({ kcal: food.kcal * g / 100, protein: food.protein * g / 100, carbs: food.carbs * g / 100, fat: food.fat * g / 100 });
+  const U = foodUnit(food);
+  let mode = U ? 'un' : 'g';
   const g0 = food.portion_g || 100;
   setSheetBody(food.name, `
     ${food.brand ? `<p class="muted" style="margin-top:-6px">${esc(food.brand)}</p>` : ''}
-    <label class="f"><span>Quantidade (g ou ml)</span><input id="qtyG" type="number" inputmode="decimal" value="${g0}"></label>
-    <div class="row wrap" style="margin:-4px 0 14px">${[...new Set([g0, 50, 100, 150, 200].filter(Boolean))].map(g => `<button class="btn sm ghost" data-g="${g}">${g} g</button>`).join('')}</div>
+    ${U ? `<div class="seg" id="qMode" style="margin-bottom:12px"><button type="button" data-m="un" class="on">${esc(plural(U.unit, 2)).replace(/^./, c => c.toUpperCase())}</button><button type="button" data-m="g">Gramas</button></div>` : ''}
+    <label class="f"><span id="qLbl"></span><input id="qtyG" type="number" step="any" inputmode="decimal"></label>
+    <div class="row wrap" id="qChips" style="margin:-4px 0 14px"></div>
     <div class="card" id="qtyPrev"></div>
     <label class="f"><span>Refeição</span><select id="qtyMeal">${MEALS.map(([k, n]) => `<option value="${k}" ${k === meal ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
     <button class="btn primary block" id="qtyAdd">Adicionar</button>
+    <button class="btn ghost block" style="margin-top:10px" id="qtyUnit">${U ? `Mudar unidade (1 ${esc(U.unit)} = ${num(U.unit_g)} g)` : 'Definir unidade (ex.: 1 unidade = 50 g)'}</button>
     ${food.source !== 'base' ? `<button class="btn ghost block" style="margin-top:10px" id="qtyEdit">Editar dados do alimento</button>` : ''}`, (b) => {
+    const val = () => Number(String($('#qtyG', b).value).replace(',', '.')) || 0;
+    const grams = () => mode === 'un' ? val() * U.unit_g : val();
+    const setMode = (m) => {
+      mode = m;
+      $$('#qMode button', b).forEach(x => x.classList.toggle('on', x.dataset.m === m));
+      if (m === 'un') {
+        $('#qLbl', b).textContent = `Quantidade (${plural(U.unit, 2)})`;
+        $('#qtyG', b).value = 1; $('#qtyG', b).step = '0.5';
+        $('#qChips', b).innerHTML = [0.5, 1, 2, 3, 4].map(n => `<button class="btn sm ghost" data-g="${n}">${n === 0.5 ? '½' : n}</button>`).join('');
+      } else {
+        $('#qLbl', b).textContent = 'Quantidade (g ou ml)';
+        $('#qtyG', b).value = g0; $('#qtyG', b).step = 'any';
+        $('#qChips', b).innerHTML = [...new Set([g0, 50, 100, 150, 200].filter(Boolean))].map(g => `<button class="btn sm ghost" data-g="${g}">${g} g</button>`).join('');
+      }
+      prev();
+    };
     const prev = () => {
-      const g = Number(String($('#qtyG', b).value).replace(',', '.')) || 0, m = calc(g);
-      $('#qtyPrev', b).innerHTML = `<div class="spread"><b style="font-size:22px">${num(m.kcal)} kcal</b><span class="small"><span style="color:var(--carb)">C ${num(m.carbs, 1)}</span> · <span style="color:var(--prot)">P ${num(m.protein, 1)}</span> · <span style="color:var(--fat)">G ${num(m.fat, 1)}</span></span></div>`;
+      const g = grams(), m = calc(g);
+      $('#qtyPrev', b).innerHTML = `<div class="spread"><b style="font-size:22px">${num(m.kcal)} kcal</b><span class="small"><span style="color:var(--carb)">C ${num(m.carbs, 1)}</span> · <span style="color:var(--prot)">P ${num(m.protein, 1)}</span> · <span style="color:var(--fat)">G ${num(m.fat, 1)}</span></span></div>
+        ${mode === 'un' ? `<div class="small muted" style="margin-top:6px">${fmtUnits(val(), U.unit)} = ${num(g)} g</div>` : ''}`;
     };
     $('#qtyG', b).addEventListener('input', prev);
+    $('#qMode', b)?.addEventListener('click', (e) => { const x = e.target.closest('[data-m]'); if (x) setMode(x.dataset.m); });
     b.addEventListener('click', (e) => { const x = e.target.closest('[data-g]'); if (x) { $('#qtyG', b).value = x.dataset.g; prev(); } });
     $('#qtyEdit', b)?.addEventListener('click', () => openNewFood(meal, food));
+    $('#qtyUnit', b).addEventListener('click', () => openUnitEdit(food, meal));
     $('#qtyAdd', b).addEventListener('click', () => {
-      const g = Number(String($('#qtyG', b).value).replace(',', '.')) || 0;
+      const g = grams();
       if (g <= 0) return toast('Informe a quantidade');
       const m = calc(g), d = state.date;
-      (db.logs[d] = db.logs[d] || []).push({ id: uid(), meal: $('#qtyMeal', b).value, food_id: food.id, name: food.name, grams: g, kcal: r1(m.kcal), protein: r1(m.protein), carbs: r1(m.carbs), fat: r1(m.fat) });
+      const entry = { id: uid(), meal: $('#qtyMeal', b).value, food_id: food.id, name: food.name, grams: r1(g), kcal: r1(m.kcal), protein: r1(m.protein), carbs: r1(m.carbs), fat: r1(m.fat) };
+      if (mode === 'un') { entry.units = val(); entry.unit = U.unit; }
+      (db.logs[d] = db.logs[d] || []).push(entry);
       db.recent = [food.id, ...db.recent.filter(i => i !== food.id)].slice(0, 20);
       save(); closeSheet(); render(); toast('Adicionado ✓');
     });
-    prev();
+    setMode(mode);
+  });
+}
+function openUnitEdit(food, meal) {
+  const U = foodUnit(food) || {};
+  setSheetBody('Unidade de ' + food.name, `
+    <p class="small muted" style="margin-top:-4px">Assim você lança por unidade em vez de pesar. Ex.: 1 <b>unidade</b> de ovo = <b>50</b> g · 1 <b>fatia</b> de pão = <b>25</b> g.</p>
+    <form id="uf"><div class="grid2">
+      <label class="f"><span>Nome da unidade</span><input name="unit" value="${esc(U.unit || 'unidade')}" placeholder="unidade, fatia, colher…" required></label>
+      <label class="f"><span>Quantos gramas tem 1?</span><input name="unit_g" type="number" step="any" inputmode="decimal" value="${esc(U.unit_g || '')}" required></label>
+    </div>
+    <div class="row wrap" style="margin:-4px 0 14px">${['unidade', 'fatia', 'colher de sopa', 'copo', 'concha'].map(u => `<button type="button" class="btn sm ghost" data-u="${u}">${u}</button>`).join('')}</div>
+    <button class="btn primary block" type="submit">Salvar unidade</button>
+    ${foodUnit(food) ? '<button class="btn danger block" type="button" id="uOff" style="margin-top:10px">Usar só gramas</button>' : ''}
+    <button class="btn ghost block" type="button" id="uBack" style="margin-top:10px">Voltar</button></form>`, (b) => {
+    b.addEventListener('click', (e) => { const x = e.target.closest('[data-u]'); if (x) $('[name=unit]', b).value = x.dataset.u; });
+    $('#uf', b).addEventListener('submit', (e) => {
+      e.preventDefault();
+      const unit = $('[name=unit]', b).value.trim().toLowerCase(), unit_g = Number(String($('[name=unit_g]', b).value).replace(',', '.'));
+      if (!unit || !(unit_g > 0)) return toast('Preencha o nome e os gramas');
+      db.units = db.units || {}; db.units[food.id] = { unit, unit_g }; save();
+      toast('Unidade salva ✓'); openQty(food, meal);
+    });
+    $('#uOff', b)?.addEventListener('click', () => { db.units = db.units || {}; db.units[food.id] = { unit: null, unit_g: null }; save(); openQty(food, meal); });
+    $('#uBack', b).addEventListener('click', () => openQty(food, meal));
   });
 }
 function openNewFood(meal, pre = {}) {
@@ -392,6 +455,8 @@ function openNewFood(meal, pre = {}) {
     <label class="f"><span>Código de barras</span><input name="barcode" inputmode="numeric" value="${esc(pre.barcode || '')}"></label></div>
     <label class="f"><span>Os valores do rótulo são por</span><div class="seg" data-seg="base"><button type="button" data-v="100" class="on">100 g / 100 ml</button><button type="button" data-v="porcao">Porção</button></div></label>
     <label class="f" id="porcaoF"><span>Porção (g ou ml)</span><input name="portion_g" type="number" inputmode="decimal" value="${esc(pre.portion_g || 100)}"></label>
+    <div class="grid2"><label class="f"><span>Unidade (opcional)</span><input name="unit" value="${esc(pre.unit || '')}" placeholder="ex.: unidade, fatia"></label>
+    <label class="f"><span>Gramas por unidade</span><input name="unit_g" type="number" step="any" inputmode="decimal" value="${esc(pre.unit_g || '')}" placeholder="ex.: 50"></label></div>
     <div class="grid4">
       <label class="f"><span>Kcal</span><input name="kcal" type="number" step="any" inputmode="decimal" value="${pre.kcal ?? ''}" required></label>
       <label class="f"><span>Carb</span><input name="carbs" type="number" step="any" inputmode="decimal" value="${pre.carbs ?? ''}"></label>
@@ -409,9 +474,10 @@ function openNewFood(meal, pre = {}) {
       const portion = n('portion_g') || 100, f = seg.base === 'porcao' ? 100 / portion : 1;
       const food = {
         id: editing ? pre.id : uid(), name: fd.name.trim(), brand: fd.brand.trim() || null, barcode: fd.barcode.trim() || null,
-        portion_g: portion, kcal: r1(n('kcal') * f), protein: r1(n('protein') * f), carbs: r1(n('carbs') * f), fat: r1(n('fat') * f), source: 'usuario'
+        portion_g: portion, unit: (fd.unit || '').trim().toLowerCase() || null, unit_g: n('unit_g') || null, kcal: r1(n('kcal') * f), protein: r1(n('protein') * f), carbs: r1(n('carbs') * f), fat: r1(n('fat') * f), source: 'usuario'
       };
       if (!food.name) return toast('Informe o nome');
+      if (db.units) delete db.units[food.id];
       db.foods = db.foods.filter(x => x.id !== food.id); db.foods.unshift(food); save();
       openQty(food, meal);
     });
@@ -712,7 +778,7 @@ VIEWS.perfil = {
       <p class="small muted" style="margin:0">iPhone: no Safari, toque em <b>Compartilhar</b> › <b>Adicionar à Tela de Início</b>.<br>Android: no Chrome, menu <b>⋮</b> › <b>Instalar app</b>.<br>Instalado, o app abre em tela cheia e seus dados ficam mais protegidos.</p>
     </div>
     <button class="btn danger block" id="wipe" style="margin-bottom:12px">Apagar todos os dados deste celular</button>
-    <p class="small muted" style="text-align:center">Ritmo · versão 1.0</p>`;
+    <p class="small muted" style="text-align:center">Ritmo · versão 1.1</p>`;
   },
   bind(view) {
     const seg = { sex: db.profile.sex, goal: db.profile.goal || 'manter' };
