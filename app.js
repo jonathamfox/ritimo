@@ -107,6 +107,38 @@ function dayTotals(day) {
   for (const l of db.logs[day] || []) { t.kcal += l.kcal; t.protein += l.protein; t.carbs += l.carbs; t.fat += l.fat; if (Number.isFinite(l.fiber)) { t.fiber += l.fiber; t.fiberKnown++; } }
   return t;
 }
+// ---------- balanço calórico ----------
+// Basal (Mifflin-St Jeor) estimado pelo perfil; se o Apple Saúde mandar "Energia em Repouso", usa o valor real.
+function bmrNow() {
+  const p = db.profile || {}, w = latestWeight();
+  if (!(p.sex && p.birth_year && p.height_cm && w)) return null;
+  const age = new Date().getFullYear() - Number(p.birth_year);
+  return Math.round(10 * w + 6.25 * Number(p.height_cm) - 5 * age + (p.sex === 'M' ? 5 : -161));
+}
+function dayBalance(day) {
+  const eaten = dayTotals(day).kcal;
+  const ms = (db.metrics || []).filter(m => m.day === day);
+  const apple = ms.find(m => m.source === 'Apple Saúde');
+  const basalReal = apple && Number.isFinite(apple.resting_kcal) && apple.resting_kcal > 0;
+  let basal = basalReal ? apple.resting_kcal : bmrNow();
+  // dia de hoje ainda não acabou: basal estimado proporcional à hora
+  if (!basalReal && basal && day === today()) { const n = new Date(); basal = basal * (n.getHours() * 60 + n.getMinutes()) / 1440; }
+  const active = apple && apple.active_kcal != null ? apple.active_kcal : ms.reduce((a, m) => a + (Number(m.active_kcal) || 0), 0);
+  return { eaten, basal: basal || 0, basalKnown: !!basal, basalReal, active, saldo: eaten - (basal || 0) - active, logged: (db.logs[day] || []).length > 0 };
+}
+function weekBalance(ref) {
+  const start = addDays(ref, -parseDay(ref).getDay()), days = [];
+  for (let i = 0; i < 7; i++) { const d = addDays(start, i); if (d > today()) break; days.push({ day: d, ...dayBalance(d) }); }
+  const used = days.filter(d => d.logged);
+  const sum = (k) => used.reduce((a, d) => a + d[k], 0);
+  return { start, days, used: used.length, eaten: sum('eaten'), basal: sum('basal'), active: sum('active'), saldo: sum('saldo') };
+}
+const saldoTxt = (v) => (v > 0 ? '+' : v < 0 ? '−' : '') + num(Math.abs(v)) + ' kcal';
+const saldoCls = (v) => v <= 0 ? 'down' : 'up';
+function balanceRows(b, labelBasal) {
+  const r = (l, v, c = '') => `<div class="spread small" style="padding:4px 0"><span class="muted">${l}</span><b class="${c}">${v}</b></div>`;
+  return r('Consumido', num(b.eaten) + ' kcal') + r(labelBasal, '− ' + num(b.basal) + ' kcal') + r('Atividade / treino', '− ' + num(b.active) + ' kcal');
+}
 const trainedOn = (day) => db.wlogs.filter(w => w.day === day).concat((db.metrics || []).filter(m => m.day === day));
 
 // ---------- interface geral ----------
@@ -269,6 +301,14 @@ VIEWS.hoje = {
       </div>
       <div class="macros">${macroBlock('Carboidrato', tot.carbs, t.carbs, 'var(--carb)')}${macroBlock('Proteína', tot.protein, t.protein, 'var(--prot)')}${macroBlock('Gordura', tot.fat, t.fat, 'var(--fat)')}</div>
     </div>
+    ${(() => {
+      const b = dayBalance(d), wk = weekBalance(d);
+      if (!b.basalKnown) return `<div class="card"><h3 style="margin:0 0 6px">Balanço do dia</h3><p class="small muted" style="margin:0">Complete sexo, ano, altura e peso em Perfil para calcular seu gasto basal.</p></div>`;
+      return `<div class="card"><div class="spread"><h3 style="margin:0">Balanço do dia</h3><span class="pill ${saldoCls(b.saldo)}">${saldoTxt(b.saldo)}</span></div>
+        <div style="margin-top:8px">${balanceRows(b, b.basalReal ? 'Basal (Apple Saúde)' : d === today() ? 'Basal até agora (estimado)' : 'Basal (estimado)')}</div>
+        <div class="small muted" style="margin-top:6px">${b.saldo <= 0 ? 'Déficit: gastou mais do que comeu.' : 'Superávit: comeu mais do que gastou.'}</div>
+        <button class="link small" data-act="semana" style="margin-top:6px">Semana: ${wk.used ? saldoTxt(wk.saldo) + ' (≈ ' + (wk.saldo > 0 ? '+' : '−') + num(Math.abs(wk.saldo) / 7700, 2) + ' kg)' : 'sem registros'} · ver detalhes ›</button></div>`;
+    })()}
     <div class="card"><div class="spread"><h3 style="margin:0">Fibras</h3><span class="muted small">${num(tot.fiber,1)} / ${num(db.profile.fiber_target ?? 30)} g</span></div>
       <div class="bar" style="margin-top:12px"><i style="width:${Math.min(100,tot.fiber/(db.profile.fiber_target ?? 30)*100)}%;background:var(--ok)"></i></div>
       <p class="small muted">Apenas alimentos com fibras informadas entram na soma. ${tot.fiberKnown ? tot.fiberKnown + ' registro(s) com dados.' : 'Nenhum registro com dados de fibras.'} Dados ausentes não significam zero.</p></div>
@@ -294,6 +334,7 @@ VIEWS.hoje = {
     view.addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.act === 'dieta') go('dieta');
+      if (b.dataset.act === 'semana') go('evolucao');
       if (b.dataset.act === 'peso') openWeightSheet();
       if (b.dataset.water) {
         const d = state.date; db.water[d] = Math.max(0, (db.water[d] || 0) + Number(b.dataset.water)); save(); render();
@@ -642,7 +683,7 @@ VIEWS.treino = {
 
 // ---------- importação do app Saúde (via Atalho do iPhone) ----------
 // O Atalho copia um texto assim:  RITMO-SAUDE;data=2026-10-30;kcal=520;passos=8123;km=5,2;fc=98;fcmax=152;min=45
-const HEALTH_KEYS = { kcal: 'active_kcal', passos: 'steps', km: 'distance_km', fc: 'hr_avg', fcmax: 'hr_max', min: 'minutes' };
+const HEALTH_KEYS = { basal: 'resting_kcal', kcal: 'active_kcal', passos: 'steps', km: 'distance_km', fc: 'hr_avg', fcmax: 'hr_max', min: 'minutes' };
 function parseHealth(txt) {
   txt = String(txt || '');
   if (!/RITMO-SAUDE/i.test(txt)) return null;
@@ -672,14 +713,14 @@ function openHealthImport(prefill) {
     if (!data) { box.innerHTML = ''; return; }
     const row = (l, v) => v == null ? '' : `<div class="item"><div class="t"><b>${l}</b></div><span class="k">${v}</span></div>`;
     box.innerHTML = `<div class="card"><h3>${dayLabel(data.day)}</h3>
-      ${row('Calorias ativas', data.active_kcal != null ? num(data.active_kcal) + ' kcal' : null)}${row('Passos', data.steps != null ? num(data.steps) : null)}
+      ${row('Calorias em repouso (basal)', data.resting_kcal != null ? num(data.resting_kcal) + ' kcal' : null)}${row('Calorias ativas', data.active_kcal != null ? num(data.active_kcal) + ' kcal' : null)}${row('Passos', data.steps != null ? num(data.steps) : null)}
       ${row('Distância', data.distance_km != null ? num(data.distance_km, 2) + ' km' : null)}${row('Minutos de exercício', data.minutes != null ? num(data.minutes) + ' min' : null)}
       ${row('FC média', data.hr_avg != null ? num(data.hr_avg) + ' bpm' : null)}${row('FC máxima', data.hr_max != null ? num(data.hr_max) + ' bpm' : null)}</div>
       <button class="btn ok block" id="hiSave">Salvar no histórico</button>`;
     $('#hiSave').onclick = () => {
       const old = (db.metrics || []).find(m => m.source === 'Apple Saúde' && m.day === data.day);
       const m = { id: old ? old.id : uid(), type: 'Atividade do dia (Apple Watch)', day: data.day, minutes: data.minutes ?? null, distance_km: data.distance_km ?? null,
-        hr_avg: data.hr_avg ?? null, hr_max: data.hr_max ?? null, active_kcal: data.active_kcal ?? null, steps: data.steps ?? null, effort: null, notes: '', source: 'Apple Saúde' };
+        hr_avg: data.hr_avg ?? null, hr_max: data.hr_max ?? null, active_kcal: data.active_kcal ?? null, resting_kcal: data.resting_kcal ?? null, steps: data.steps ?? null, effort: null, notes: '', source: 'Apple Saúde' };
       db.metrics = (db.metrics || []).filter(x => x !== old); db.metrics.push(m);
       save(); closeSheet(); state.tab = 'treino'; render(); toast(old ? 'Dia atualizado ✓' : 'Dados do Saúde salvos ✓');
     };
@@ -693,8 +734,9 @@ function openHealthImport(prefill) {
       <ol class="small muted" style="padding-left:18px;line-height:1.5">
         <li>App <b>Atalhos</b> › <b>+</b> › nome: <b>Ritmo Saúde</b>.</li>
         <li><b>Buscar Amostras de Saúde</b>: tipo <b>Energia Ativa</b>, Data de Início <b>é hoje</b>. Depois <b>Calcular Estatísticas</b> › <b>Soma</b>. Depois <b>Definir Variável</b> “kcal”.</li>
+        <li>Opcional: <b>Energia em Repouso</b> (Soma, “basal”) deixa o balanço com o seu basal real.</li>
         <li>Repita para <b>Passos</b> (Soma, “passos”), <b>Distância de Caminhada + Corrida</b> (Soma, “km”), <b>Minutos de Exercício</b> (Soma, “min”), <b>Frequência Cardíaca</b> (Média, “fc”) e de novo Frequência Cardíaca (Máximo, “fcmax”).</li>
-        <li>Ação <b>Texto</b>: <code>RITMO-SAUDE;data=</code>[Data Atual] (toque nela › Formato › <b>Curto</b>);<code>kcal=</code>[kcal];<code>passos=</code>[passos];<code>km=</code>[km];<code>min=</code>[min];<code>fc=</code>[fc];<code>fcmax=</code>[fcmax]</li>
+        <li>Ação <b>Texto</b>: <code>RITMO-SAUDE;basal=</code>[basal]<code>;data=</code>[Data Atual] (toque nela › Formato › <b>Curto</b>);<code>kcal=</code>[kcal];<code>passos=</code>[passos];<code>km=</code>[km];<code>min=</code>[min];<code>fc=</code>[fc];<code>fcmax=</code>[fcmax]</li>
         <li><b>Copiar para Área de Transferência</b> e <b>Mostrar Notificação</b> “Dados copiados — abra o Ritmo”.</li>
       </ol></details>`, (b) => {
     const tryParse = (t) => { const d = parseHealth(t); show(d); if (!d && t) toast('Texto não reconhecido — confira o atalho'); return d; };
@@ -844,6 +886,30 @@ function kcalBars() {
     ${days.map((d, i) => { const v = vals[i], x = gap + i * (bw + gap); return `<rect x="${x}" y="${y(v)}" width="${bw}" height="${Math.max(H - pb - y(v), v ? 2 : 0)}" rx="7" fill="${v > t.kcal ? 'var(--danger)' : 'var(--accent)'}" opacity="${d === today() ? 1 : .75}"/><text x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${DOW[parseDay(d).getDay()]}</text>`; }).join('')}
   </svg>` };
 }
+function weekCard() {
+  const wk = weekBalance(today());
+  if (!bmrNow()) return `<div class="card"><h3 style="margin:0 0 6px">Balanço da semana</h3><p class="small muted" style="margin:0">Complete seus dados em Perfil para calcular.</p></div>`;
+  const s0 = parseDay(wk.start), s1 = parseDay(addDays(wk.start, 6));
+  const W = 340, H = 140, mid = 70, bw = 30, gap = (W - 7 * bw) / 8;
+  const mx = Math.max(500, ...wk.days.filter(d => d.logged).map(d => Math.abs(d.saldo)));
+  const bars = Array.from({ length: 7 }, (_, i) => {
+    const d = wk.days[i], x = gap + i * (bw + gap), lab = `<text x="${x + bw / 2}" y="${H - 2}" text-anchor="middle">${DOW[i]}</text>`;
+    if (!d || !d.logged) return `<rect x="${x}" y="${mid - 1}" width="${bw}" height="2" rx="1" fill="var(--line)"/>` + lab;
+    const h = Math.max(3, Math.abs(d.saldo) / mx * (mid - 16));
+    return `<rect x="${x}" y="${d.saldo > 0 ? mid - h : mid}" width="${bw}" height="${h}" rx="6" fill="${d.saldo > 0 ? 'var(--accent)' : 'var(--ok)'}"/>` + lab;
+  }).join('');
+  const kg = wk.saldo / 7700;
+  return `<div class="card">
+    <div class="spread"><h3 style="margin:0">Balanço da semana</h3><span class="muted small">${s0.getDate()}/${pad(s0.getMonth() + 1)} – ${s1.getDate()}/${pad(s1.getMonth() + 1)}</span></div>
+    ${wk.used ? `<div class="row" style="margin:10px 0 4px;align-items:baseline"><span class="big" style="color:${wk.saldo <= 0 ? 'var(--ok)' : 'var(--accent)'}">${saldoTxt(wk.saldo).replace(' kcal', '')}</span><span class="muted">kcal</span>
+      <span class="pill ${saldoCls(wk.saldo)}" style="margin-left:auto">≈ ${kg > 0 ? '+' : '−'}${num(Math.abs(kg), 2)} kg</span></div>
+    ${balanceRows(wk, 'Basal')}
+    <svg class="chart" style="height:140px;margin-top:8px" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><line x1="0" x2="${W}" y1="${mid}" y2="${mid}" stroke="var(--line)"/>${bars}</svg>
+    <div class="spread small"><span style="color:var(--ok)">▼ déficit</span><span class="muted">${wk.used} de ${wk.days.length} dias com refeições</span><span style="color:var(--accent)">▲ superávit</span></div>
+    <p class="small muted" style="margin:8px 0 0">Só entram os dias com refeições lançadas. Basal ${wk.days.some(d => d.basalReal) ? 'do Apple Saúde quando disponível, senão ' : ''}estimado pelo seu perfil. 7.700 kcal ≈ 1 kg — é uma estimativa.</p>`
+      : `<p class="small muted" style="margin:8px 0 0">Lance suas refeições para ver o balanço da semana.</p>`}
+  </div>`;
+}
 VIEWS.evolucao = {
   html() {
     const pts = [...db.weights].sort((a, b) => a.day < b.day ? -1 : 1);
@@ -868,6 +934,7 @@ VIEWS.evolucao = {
       <div class="stat"><span>Treinos (30d)</span><b>${t30}</b></div>
       <div class="stat"><span>Cintura</span><b>${(() => { const c = [...pts].reverse().find(p => p.waist_cm); return c ? num(c.waist_cm, 1) + ' cm' : '—'; })()}</b></div>
     </div>
+    ${weekCard()}
     <div class="card"><div class="spread"><h3 style="margin:0">Calorias — últimos 7 dias</h3><span class="small" style="color:var(--ok)">— meta</span></div>${kb.svg}</div>
     <div class="section-title"><h3>Registros de peso</h3></div>
     <div class="card">${pts.length ? [...pts].reverse().slice(0, 30).map(p => `<div class="item"><div class="t"><b>${num(p.kg, 1)} kg${p.waist_cm ? ` <span class="tag">cintura ${num(p.waist_cm, 1)} cm</span>` : ''}</b><span>${dayLabel(p.day)}</span></div><button class="x" data-delw="${p.id}" aria-label="Remover">×</button></div>`).join('') : '<div class="empty">Nenhum registro ainda.</div>'}</div>`;
@@ -926,7 +993,7 @@ VIEWS.perfil = {
       <p class="small muted" style="margin:0">iPhone: no Safari, toque em <b>Compartilhar</b> › <b>Adicionar à Tela de Início</b>.<br>Android: no Chrome, menu <b>⋮</b> › <b>Instalar app</b>.<br>Instalado, o app abre em tela cheia e seus dados ficam mais protegidos.</p>
     </div>
     <button class="btn danger block" id="wipe" style="margin-bottom:12px">Apagar todos os dados deste celular</button>
-    <p class="small muted" style="text-align:center">Ritmo · versão 2.3</p>`;
+    <p class="small muted" style="text-align:center">Ritmo · versão 2.4</p>`;
   },
   bind(view) {
     const seg = { sex: db.profile.sex, goal: db.profile.goal || 'manter' };

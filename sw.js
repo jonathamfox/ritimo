@@ -1,6 +1,6 @@
 // Permite abrir o app mesmo sem internet. Ao publicar uma versão nova, mude o número abaixo.
-const CACHE = 'ritmo-v9';
-const FILES = ['./', './index.html', './app.css', './app.js?v=2.3', './foods.js?v=2.3', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
+const CACHE = 'ritmo-v10';
+const FILES = ['./', './index.html', './app.css', './app.js?v=2.4', './foods.js?v=2.4', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
